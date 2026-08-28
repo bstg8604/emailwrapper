@@ -51,12 +51,16 @@ public static class MockData
             "Pre-placement talk — Tuesday 6 PM",
             "Placement Cell <placement@iitb.ac.in>",
             "Yesterday, 3:20 PM",
-            "<p>You are invited to attend the pre-placement talk being held in LH-301 this Tuesday at 6 PM. Attendance is mandatory for registered students.</p>"),
+            "<p>You are invited to attend the pre-placement talk being held in LH-301 this Tuesday at 6 PM. Attendance is mandatory for registered students.</p>" +
+            "<p><img src=\"https://example.com/placement-banner.png\" alt=\"banner\"/></p>",
+            To: "you@iitb.ac.in"),
         ["m5"] = new MessageDetail(
             "Project meeting notes",
             "Rohan Mehta <rohan.mehta@iitb.ac.in>",
             "Mon, 11:47 AM",
-            "<p>Attaching the notes from today's sync. Key action items are highlighted in bold — please review before Thursday.</p>"),
+            "<p>Attaching the notes from today's sync. Key action items are highlighted in bold — please review before Thursday.</p>",
+            To: "you@iitb.ac.in",
+            Cc: "priya.singh@iitb.ac.in, dev.patel@iitb.ac.in"),
         ["m6"] = new MessageDetail(
             "Scheduled maintenance — webmail",
             "IT Services <itsc@iitb.ac.in>",

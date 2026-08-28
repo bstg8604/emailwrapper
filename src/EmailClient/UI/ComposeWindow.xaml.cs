@@ -9,7 +9,8 @@ public partial class ComposeWindow : Window
     private readonly DomBridge _bridge;
     private readonly bool _useMockData;
 
-    public ComposeWindow(DomBridge bridge, bool useMockData = false, string to = "", string subject = "", string body = "")
+    public ComposeWindow(DomBridge bridge, bool useMockData = false, string to = "", string subject = "",
+        string body = "", string cc = "", string bcc = "")
     {
         InitializeComponent();
         MaximizeBoundsFix.Apply(this);
@@ -18,8 +19,21 @@ public partial class ComposeWindow : Window
         ToBox.Text = to;
         SubjectBox.Text = subject;
         BodyBox.Text = body;
+        CcBox.Text = cc;
+        BccBox.Text = bcc;
+
+        if (!string.IsNullOrWhiteSpace(cc) || !string.IsNullOrWhiteSpace(bcc))
+            ShowCcBcc();
 
         PreviewKeyDown += ComposeWindow_PreviewKeyDown;
+    }
+
+    private void CcBccToggle_Click(object sender, MouseButtonEventArgs e) => ShowCcBcc();
+
+    private void ShowCcBcc()
+    {
+        CcBccPanel.Visibility = Visibility.Visible;
+        CcBccToggle.Visibility = Visibility.Collapsed;
     }
 
     // Ctrl+Enter to send and Esc to cancel are standard across Gmail, Outlook, and Apple Mail.
@@ -51,7 +65,7 @@ public partial class ComposeWindow : Window
             else
             {
                 await _bridge.StartComposeAsync();
-                await _bridge.FillComposeAsync(ToBox.Text, SubjectBox.Text, BodyBox.Text);
+                await _bridge.FillComposeAsync(ToBox.Text, SubjectBox.Text, BodyBox.Text, CcBox.Text, BccBox.Text);
                 await _bridge.ClickSendAsync();
             }
             Close();

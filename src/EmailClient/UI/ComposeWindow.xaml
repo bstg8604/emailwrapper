@@ -79,11 +79,36 @@
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
                     <TextBlock Text="To" Style="{StaticResource FieldLabel}"/>
                     <TextBox x:Name="ToBox" Grid.Column="1" Style="{StaticResource FieldBox}"/>
+                    <TextBlock x:Name="CcBccToggle" Grid.Column="2" Text="Cc/Bcc" Foreground="#FF9A9A9A" FontSize="12"
+                               VerticalAlignment="Center" Cursor="Hand" MouseLeftButtonUp="CcBccToggle_Click"/>
                 </Grid>
                 <Border Height="1" Background="#FFF0F0F0"/>
+
+                <StackPanel x:Name="CcBccPanel" Visibility="Collapsed">
+                    <Grid Margin="0,2">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="Cc" Style="{StaticResource FieldLabel}"/>
+                        <TextBox x:Name="CcBox" Grid.Column="1" Style="{StaticResource FieldBox}"/>
+                    </Grid>
+                    <Border Height="1" Background="#FFF0F0F0"/>
+
+                    <Grid Margin="0,2">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="Bcc" Style="{StaticResource FieldLabel}"/>
+                        <TextBox x:Name="BccBox" Grid.Column="1" Style="{StaticResource FieldBox}"/>
+                    </Grid>
+                    <Border Height="1" Background="#FFF0F0F0"/>
+                </StackPanel>
 
                 <Grid Margin="0,2">
                     <Grid.ColumnDefinitions>

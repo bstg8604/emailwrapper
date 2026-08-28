@@ -20,7 +20,9 @@ public sealed record MessageDetail(
     [property: JsonPropertyName("subject")] string Subject,
     [property: JsonPropertyName("from")] string From,
     [property: JsonPropertyName("date")] string Date,
-    [property: JsonPropertyName("bodyHtml")] string BodyHtml);
+    [property: JsonPropertyName("bodyHtml")] string BodyHtml,
+    [property: JsonPropertyName("to")] string To = "",
+    [property: JsonPropertyName("cc")] string Cc = "");
 
 /// <summary>
 /// Drives the real webmail.iitb.ac.in DOM inside the hidden AutomationHost: scrapes what's on
@@ -50,6 +52,9 @@ public sealed class DomBridge(AutomationHost host)
     private const string ComposeButtonSelector = "#button-compose, a.button.compose";
     private const string SendButtonSelector = "#button-send, a.button.send";
     private const string ToFieldSelector = "#_to, textarea[name='_to'], input[name='_to']";
+    private const string CcFieldSelector = "#_cc, textarea[name='_cc'], input[name='_cc']";
+    private const string BccFieldSelector = "#_bcc, textarea[name='_bcc'], input[name='_bcc']";
+    private const string CcToggleSelector = "#compose-cc, a[data-target='_cc'], a.button.cc, [aria-label='Cc' i]";
     private const string SubjectFieldSelector = "#_subject, input[name='_subject']";
     private const string BodyFieldSelector = "#composebody, textarea[name='_message']";
     private const string BodyIframeSelector = "iframe#composebody_ifr"; // present when TinyMCE HTML compose is on
@@ -58,6 +63,8 @@ public sealed class DomBridge(AutomationHost host)
     private const string PreviewSubjectSelector = "tr.subject td, .message-partheaders tr.subject td:last-child, .subject";
     private const string PreviewFromSelector = "tr.from td, .message-partheaders tr.from td:last-child, .from";
     private const string PreviewDateSelector = "tr.date td, .message-partheaders tr.date td:last-child, .date";
+    private const string PreviewToSelector = "tr.to td, .message-partheaders tr.to td:last-child, .to";
+    private const string PreviewCcSelector = "tr.cc td, .message-partheaders tr.cc td:last-child, .cc";
     private const string PreviewBodySelector = "#messagebody, .message-body, body";
 
     /// <summary>Roundcube's inbox has message rows; its login form does not.</summary>
@@ -118,6 +125,8 @@ public sealed class DomBridge(AutomationHost host)
                     subject: text("{{PreviewSubjectSelector}}"),
                     from: text("{{PreviewFromSelector}}"),
                     date: text("{{PreviewDateSelector}}"),
+                    to: text("{{PreviewToSelector}}"),
+                    cc: text("{{PreviewCcSelector}}"),
                     bodyHtml: body.innerHTML
                 });
             })();
@@ -138,7 +147,7 @@ public sealed class DomBridge(AutomationHost host)
         await Task.Delay(500);
     }
 
-    public async Task FillComposeAsync(string to, string subject, string body)
+    public async Task FillComposeAsync(string to, string subject, string body, string cc = "", string bcc = "")
     {
         var script = $$"""
             (function() {
@@ -154,6 +163,17 @@ public sealed class DomBridge(AutomationHost host)
 
                 const subject = document.querySelector("{{SubjectFieldSelector}}");
                 if (subject) setNativeValue(subject, {{JsonSerializer.Serialize(subject)}});
+
+                const cc = {{JsonSerializer.Serialize(cc)}};
+                const bcc = {{JsonSerializer.Serialize(bcc)}};
+                if (cc || bcc) {
+                    // Cc/Bcc fields are hidden until Roundcube's own toggle reveals them.
+                    document.querySelector("{{CcToggleSelector}}")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+                    const ccField = document.querySelector("{{CcFieldSelector}}");
+                    if (cc && ccField) setNativeValue(ccField, cc);
+                    const bccField = document.querySelector("{{BccFieldSelector}}");
+                    if (bcc && bccField) setNativeValue(bccField, bcc);
+                }
 
                 // Plain-text compose: a regular textarea. HTML compose: TinyMCE swaps in an
                 // iframe (id ends in "_ifr") whose contentDocument.body is the actual editor.

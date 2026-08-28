@@ -196,6 +196,7 @@
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="280"/>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="Auto"/>
@@ -209,9 +210,16 @@
                 </Button>
 
                 <Button Grid.Column="1" x:Name="RefreshButton" Content="&#xE72C;" Style="{StaticResource IconButton}"
-                        ToolTip="Refresh" Click="RefreshButton_Click" Margin="0,0,12,0"/>
+                        ToolTip="Refresh" Click="RefreshButton_Click" Margin="0,0,4,0"/>
 
-                <Border Grid.Column="2" Background="#FFF4F4F6" CornerRadius="8" Padding="10,6">
+                <ComboBox Grid.Column="2" x:Name="SortCombo" Width="112" Margin="0,0,12,0" VerticalAlignment="Center"
+                          SelectedIndex="0" SelectionChanged="SortCombo_SelectionChanged">
+                    <ComboBoxItem Content="Newest first" Tag="Date"/>
+                    <ComboBoxItem Content="Sender A–Z" Tag="Sender"/>
+                    <ComboBoxItem Content="Subject A–Z" Tag="Subject"/>
+                </ComboBox>
+
+                <Border Grid.Column="3" Background="#FFF4F4F6" CornerRadius="8" Padding="10,6">
                     <Grid>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto"/>
@@ -224,9 +232,9 @@
                     </Grid>
                 </Border>
 
-                <TextBlock Grid.Column="3" x:Name="StatusText" VerticalAlignment="Center" Margin="16,0,0,0" Foreground="#FF9A9A9A" FontSize="12"/>
+                <TextBlock Grid.Column="4" x:Name="StatusText" VerticalAlignment="Center" Margin="16,0,0,0" Foreground="#FF9A9A9A" FontSize="12"/>
 
-                <Button Grid.Column="4" x:Name="InspectButton" Content="&#xE90F;" Style="{StaticResource IconButton}"
+                <Button Grid.Column="5" x:Name="InspectButton" Content="&#xE90F;" Style="{StaticResource IconButton}"
                         ToolTip="Inspect webmail (DevTools) — verify Roundcube selectors" Click="InspectButton_Click"/>
             </Grid>
         </Border>
@@ -297,7 +305,7 @@
                     <RowDefinition Height="*"/>
                 </Grid.RowDefinitions>
 
-                <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="14,10,14,4">
+                <StackPanel x:Name="QuickFilterBar" Grid.Row="0" Orientation="Horizontal" Margin="14,10,14,4">
                     <ToggleButton x:Name="FilterAll" Content="All" Style="{StaticResource QuickFilterChip}"
                                   IsChecked="True" Click="QuickFilter_Click" Tag="All"/>
                     <ToggleButton x:Name="FilterUnread" Content="Unread" Style="{StaticResource QuickFilterChip}"
@@ -306,8 +314,23 @@
                                   Click="QuickFilter_Click" Tag="Starred"/>
                 </StackPanel>
 
+                <Grid x:Name="BulkActionBar" Grid.Row="0" Margin="14,6,10,4" Visibility="Collapsed">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock x:Name="BulkCountText" Grid.Column="0" VerticalAlignment="Center" FontSize="12.5" Foreground="{StaticResource AccentDeepBrush}" FontWeight="SemiBold"/>
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
+                        <Button Content="&#xE715;" Style="{StaticResource IconButton}" ToolTip="Mark as read" Click="BulkMarkRead_Click"/>
+                        <Button Content="&#xE7B8;" Style="{StaticResource IconButton}" ToolTip="Archive" Click="BulkArchive_Click"/>
+                        <Button Content="&#xE74D;" Style="{StaticResource IconButton}" ToolTip="Delete" Click="BulkDelete_Click"/>
+                        <Button Content="&#xE711;" Style="{StaticResource IconButton}" ToolTip="Clear selection" Click="BulkClear_Click"/>
+                    </StackPanel>
+                </Grid>
+
                 <ListBox Grid.Row="1" x:Name="MessageList" BorderThickness="0"
                          ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                         VirtualizingPanel.IsVirtualizing="False"
                          SelectionChanged="MessageList_SelectionChanged"
                          KeyDown="MessageList_KeyDown">
                     <ListBox.ItemTemplate>
@@ -315,17 +338,22 @@
                             <Grid Margin="14,12">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
                                     <ColumnDefinition Width="*"/>
                                     <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
 
-                                <Border Grid.Column="0" Width="34" Height="34" CornerRadius="17"
+                                <CheckBox Grid.Column="0" VerticalAlignment="Top" Margin="0,2,10,0" Tag="{Binding}"
+                                          Checked="RowCheck_Changed" Unchecked="RowCheck_Changed"
+                                          PreviewMouseLeftButtonDown="StarToggle_PreviewMouseDown"/>
+
+                                <Border Grid.Column="1" Width="34" Height="34" CornerRadius="17"
                                         Background="{StaticResource AvatarBrush}" VerticalAlignment="Top" Margin="0,0,10,0">
                                     <TextBlock Text="{Binding Initial}" Foreground="White" FontWeight="SemiBold"
                                                HorizontalAlignment="Center" VerticalAlignment="Center"/>
                                 </Border>
 
-                                <StackPanel Grid.Column="1">
+                                <StackPanel Grid.Column="2">
                                     <Grid>
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="*"/>
@@ -351,7 +379,7 @@
                                                Margin="0,2,0,0" TextTrimming="CharacterEllipsis"/>
                                 </StackPanel>
 
-                                <Button Grid.Column="2" Style="{StaticResource StarToggle}" VerticalAlignment="Top"
+                                <Button Grid.Column="3" Style="{StaticResource StarToggle}" VerticalAlignment="Top"
                                         Click="StarToggle_Click" Tag="{Binding}"
                                         PreviewMouseLeftButtonDown="StarToggle_PreviewMouseDown">
                                     <TextBlock FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="13">
@@ -393,6 +421,7 @@
                     <Grid>
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
                             <RowDefinition Height="*"/>
                         </Grid.RowDefinitions>
 
@@ -414,7 +443,9 @@
                                 </StackPanel>
                                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
                                     <Button Content="&#xE8CA;" Style="{StaticResource IconButton}" ToolTip="Reply" Click="ReplyButton_Click"/>
+                                    <Button Content="&#xE97A;" Style="{StaticResource IconButton}" ToolTip="Reply all" Click="ReplyAllButton_Click"/>
                                     <Button Content="&#xE72D;" Style="{StaticResource IconButton}" ToolTip="Forward" Click="ForwardButton_Click"/>
+                                    <Button x:Name="MarkUnreadButton" Content="&#xE715;" Style="{StaticResource IconButton}" ToolTip="Mark as unread" Click="MarkUnreadButton_Click"/>
                                     <Button Content="&#xE7B8;" Style="{StaticResource IconButton}" ToolTip="Archive" Click="ArchiveButton_Click"/>
                                     <Button Content="&#xE74D;" Style="{StaticResource IconButton}" ToolTip="Delete" Click="DeleteButton_Click"/>
                                 </StackPanel>
@@ -423,7 +454,20 @@
 
                         <Border Grid.Row="0" VerticalAlignment="Bottom" Height="1" Background="#FFF0F0F0" Margin="28,0"/>
 
-                        <wv2:WebView2 x:Name="ReadingPane" Grid.Row="1" Margin="28,16,28,24"/>
+                        <Border x:Name="ImagesBlockedBar" Grid.Row="1" Background="#FFFDF6E3" CornerRadius="6"
+                                Margin="28,12,28,0" Padding="12,7" Visibility="Collapsed">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="Images are hidden to protect your privacy" FontSize="12" Foreground="#FF8A6D1D" VerticalAlignment="Center"/>
+                                <Button Grid.Column="1" Content="Show images" FontSize="12" Background="Transparent" BorderThickness="0"
+                                        Foreground="{StaticResource AccentDeepBrush}" Cursor="Hand" Click="ShowImagesButton_Click"/>
+                            </Grid>
+                        </Border>
+
+                        <wv2:WebView2 x:Name="ReadingPane" Grid.Row="2" Margin="28,16,28,24"/>
                     </Grid>
                 </Border>
             </Grid>

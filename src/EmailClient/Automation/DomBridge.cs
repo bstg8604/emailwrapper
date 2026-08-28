@@ -16,13 +16,19 @@ public sealed record InboxRow(
     public string Initial => string.IsNullOrWhiteSpace(Sender) ? "?" : Sender.Trim()[..1].ToUpperInvariant();
 }
 
+public sealed record MailAttachment(
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("size")] string Size,
+    [property: JsonPropertyName("url")] string Url = "");
+
 public sealed record MessageDetail(
     [property: JsonPropertyName("subject")] string Subject,
     [property: JsonPropertyName("from")] string From,
     [property: JsonPropertyName("date")] string Date,
     [property: JsonPropertyName("bodyHtml")] string BodyHtml,
     [property: JsonPropertyName("to")] string To = "",
-    [property: JsonPropertyName("cc")] string Cc = "");
+    [property: JsonPropertyName("cc")] string Cc = "",
+    [property: JsonPropertyName("attachments")] IReadOnlyList<MailAttachment>? Attachments = null);
 
 /// <summary>
 /// Drives the real webmail.iitb.ac.in DOM inside the hidden AutomationHost: scrapes what's on
@@ -66,6 +72,7 @@ public sealed class DomBridge(AutomationHost host)
     private const string PreviewToSelector = "tr.to td, .message-partheaders tr.to td:last-child, .to";
     private const string PreviewCcSelector = "tr.cc td, .message-partheaders tr.cc td:last-child, .cc";
     private const string PreviewBodySelector = "#messagebody, .message-body, body";
+    private const string AttachmentItemSelector = "#attachment-list li, .attachmentslist li";
 
     /// <summary>Roundcube's inbox has message rows; its login form does not.</summary>
     public const string IsLoggedInScript =
@@ -121,12 +128,23 @@ public sealed class DomBridge(AutomationHost host)
                 const text = (sel) => doc.querySelector(sel)?.textContent?.trim() ?? "";
                 const body = doc.querySelector("{{PreviewBodySelector}}");
                 if (!body) return "null";
+                // Roundcube renders attachments as a list outside the preview iframe.
+                const attachments = Array.from(document.querySelectorAll("{{AttachmentItemSelector}}")).map(li => {
+                    const link = li.querySelector("a[href]");
+                    return {
+                        name: (li.querySelector(".attachment-name, .filename")?.textContent ?? li.textContent ?? "").trim(),
+                        size: (li.querySelector(".attachment-size, .filesize")?.textContent ?? "").trim(),
+                        url: link ? link.href : ""
+                    };
+                });
+
                 return JSON.stringify({
                     subject: text("{{PreviewSubjectSelector}}"),
                     from: text("{{PreviewFromSelector}}"),
                     date: text("{{PreviewDateSelector}}"),
                     to: text("{{PreviewToSelector}}"),
                     cc: text("{{PreviewCcSelector}}"),
+                    attachments: attachments,
                     bodyHtml: body.innerHTML
                 });
             })();

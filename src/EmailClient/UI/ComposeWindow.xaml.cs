@@ -1,21 +1,26 @@
 using System.Windows;
 using System.Windows.Input;
-using EmailClient.Automation;
 
 namespace EmailClient.UI;
 
+public sealed record ComposeResult(string To, string Cc, string Bcc, string Subject, string Body)
+{
+    public bool HasContent =>
+        !string.IsNullOrWhiteSpace(To) || !string.IsNullOrWhiteSpace(Subject) || !string.IsNullOrWhiteSpace(Body);
+}
+
 public partial class ComposeWindow : Window
 {
-    private readonly DomBridge _bridge;
-    private readonly bool _useMockData;
+    /// <summary>Set when the user hits Send; null if the window was cancelled.</summary>
+    public ComposeResult? Result { get; private set; }
 
-    public ComposeWindow(DomBridge bridge, bool useMockData = false, string to = "", string subject = "",
-        string body = "", string cc = "", string bcc = "")
+    /// <summary>Whatever was typed when the window closed without sending, for draft-saving.</summary>
+    public ComposeResult? Draft { get; private set; }
+
+    public ComposeWindow(string to = "", string subject = "", string body = "", string cc = "", string bcc = "")
     {
         InitializeComponent();
         MaximizeBoundsFix.Apply(this);
-        _bridge = bridge;
-        _useMockData = useMockData;
         ToBox.Text = to;
         SubjectBox.Text = subject;
         BodyBox.Text = body;
@@ -26,6 +31,14 @@ public partial class ComposeWindow : Window
             ShowCcBcc();
 
         PreviewKeyDown += ComposeWindow_PreviewKeyDown;
+
+        // Capture whatever was typed on close so MainWindow can keep it as a draft when the
+        // window is dismissed without sending.
+        Closed += (_, _) =>
+        {
+            if (Result is null)
+                Draft = new ComposeResult(ToBox.Text, CcBox.Text, BccBox.Text, SubjectBox.Text, BodyBox.Text);
+        };
     }
 
     private void CcBccToggle_Click(object sender, MouseButtonEventArgs e) => ShowCcBcc();
@@ -51,31 +64,19 @@ public partial class ComposeWindow : Window
         }
     }
 
-    private async void SendButton_Click(object sender, RoutedEventArgs e)
+    private void SendButton_Click(object sender, RoutedEventArgs e)
     {
-        SendButton.IsEnabled = false;
-        try
+        if (string.IsNullOrWhiteSpace(ToBox.Text))
         {
-            if (_useMockData)
-            {
-                // Sample-data mode: no real webmail session to drive yet. Just simulate the
-                // round trip so the compose flow can be tried without a completed login.
-                await Task.Delay(400);
-            }
-            else
-            {
-                await _bridge.StartComposeAsync();
-                await _bridge.FillComposeAsync(ToBox.Text, SubjectBox.Text, BodyBox.Text, CcBox.Text, BccBox.Text);
-                await _bridge.ClickSendAsync();
-            }
-            Close();
+            System.Windows.MessageBox.Show(this, "Add at least one recipient.", "Missing recipient",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
         }
-        catch (Exception ex)
-        {
-            System.Windows.MessageBox.Show(this, $"Couldn't send: {ex.Message}", "Send failed",
-                MessageBoxButton.OK, MessageBoxImage.Error);
-            SendButton.IsEnabled = true;
-        }
+
+        // The actual send is driven by MainWindow, after a short undo-send window — this window's
+        // job is just to collect the message and hand it back.
+        Result = new ComposeResult(ToBox.Text, CcBox.Text, BccBox.Text, SubjectBox.Text, BodyBox.Text);
+        Close();
     }
 
     private void CancelButton_Click(object sender, RoutedEventArgs e) => Close();

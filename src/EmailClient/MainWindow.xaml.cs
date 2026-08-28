@@ -5,6 +5,7 @@ using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 using EmailClient.Automation;
@@ -69,6 +70,7 @@ public partial class MainWindow : Window
         Loaded += MainWindow_Loaded;
         Closing += MainWindow_Closing;
         StateChanged += MainWindow_StateChanged;
+        PreviewKeyDown += MainWindow_PreviewKeyDown;
 
         _uiReady = true;
     }
@@ -240,10 +242,113 @@ public partial class MainWindow : Window
 
     private void ComposeButton_Click(object sender, RoutedEventArgs e) => OpenCompose();
 
-    private void OpenCompose(string to = "", string subject = "", string body = "", string cc = "")
+    private void OpenCompose(string to = "", string subject = "", string body = "", string cc = "", string bcc = "",
+        string? replacesDraftId = null)
     {
-        var compose = new ComposeWindow(_bridge, UseMockData, to, subject, body, cc) { Owner = this };
+        var compose = new ComposeWindow(to, subject, body, cc, bcc) { Owner = this };
         compose.ShowDialog();
+
+        if (replacesDraftId is not null)
+            RemoveMessageEverywhere(replacesDraftId);
+
+        if (compose.Result is { } result)
+        {
+            BeginUndoableSend(result);
+            return;
+        }
+
+        // Closed without sending but with content typed — keep it as a draft rather than
+        // silently discarding what the user wrote (Gmail/Outlook both auto-save drafts).
+        if (compose.Draft is { } draft && draft.HasContent)
+            AddLocalMessage("Drafts", draft, "Saved to Drafts");
+        else if (replacesDraftId is not null)
+            ApplyCurrentFolderView();
+    }
+
+    private int _localIdSeq;
+
+    private void AddLocalMessage(string folder, ComposeResult message, string status)
+    {
+        var id = $"local{++_localIdSeq}";
+        var row = new InboxRow(
+            id,
+            folder == "Drafts" ? "You" : message.To,
+            string.IsNullOrWhiteSpace(message.Subject) ? "(no subject)" : message.Subject,
+            message.Body.Replace("\r", " ").Replace("\n", " ").Trim(),
+            DateTime.Now.ToString("h:mm tt"),
+            Unread: false);
+
+        _folderData[folder].Insert(0, row);
+        _localBodies[id] = new MessageDetail(
+            row.Subject,
+            folder == "Drafts" ? "You <you@iitb.ac.in>" : $"To: {message.To}",
+            "Just now",
+            $"<p>{System.Net.WebUtility.HtmlEncode(message.Body).Replace("\n", "<br/>")}</p>",
+            To: message.To,
+            Cc: message.Cc);
+
+        ApplyCurrentFolderView();
+        StatusText.Text = $"{status} (sample data)";
+    }
+
+    private readonly Dictionary<string, MessageDetail> _localBodies = [];
+
+    // ---- Undo send ----------------------------------------------------------------------
+
+    private DispatcherTimer? _sendTimer;
+    private ComposeResult? _pendingSend;
+
+    // Gmail's signature feature: sending doesn't happen immediately — it's held for a few
+    // seconds with an "Undo" option, then actually goes out once that window passes.
+    private void BeginUndoableSend(ComposeResult result)
+    {
+        _pendingSend = result;
+        SendSnackbar.Visibility = Visibility.Visible;
+
+        _sendTimer?.Stop();
+        _sendTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
+        _sendTimer.Tick += async (_, _) =>
+        {
+            _sendTimer!.Stop();
+            SendSnackbar.Visibility = Visibility.Collapsed;
+            var toSend = _pendingSend;
+            _pendingSend = null;
+            if (toSend is not null)
+                await PerformSendAsync(toSend);
+        };
+        _sendTimer.Start();
+    }
+
+    private void UndoSend_Click(object sender, RoutedEventArgs e)
+    {
+        _sendTimer?.Stop();
+        SendSnackbar.Visibility = Visibility.Collapsed;
+        var toEdit = _pendingSend;
+        _pendingSend = null;
+        if (toEdit is not null)
+            OpenCompose(toEdit.To, toEdit.Subject, toEdit.Body, toEdit.Cc, toEdit.Bcc);
+    }
+
+    private async Task PerformSendAsync(ComposeResult result)
+    {
+        try
+        {
+            if (UseMockData)
+            {
+                await Task.Delay(200); // simulate the round trip
+            }
+            else
+            {
+                await _bridge.StartComposeAsync();
+                await _bridge.FillComposeAsync(result.To, result.Subject, result.Body, result.Cc, result.Bcc);
+                await _bridge.ClickSendAsync();
+            }
+            AddLocalMessage("Sent", result, "Message sent");
+        }
+        catch (Exception ex)
+        {
+            StatusText.Text = $"Send failed: {ex.Message}";
+        }
     }
 
     // ---- Folders ------------------------------------------------------------------------
@@ -453,6 +558,9 @@ public partial class MainWindow : Window
 
     private static string WrapHtml(string bodyHtml) => $"<html><body style='font-family:Segoe UI'>{bodyHtml}</body></html>";
 
+    private static string StripHtml(string html) =>
+        System.Net.WebUtility.HtmlDecode(Regex.Replace(html.Replace("<br/>", "\n"), "<[^>]+>", "")).Trim();
+
     private static readonly Regex RemoteImageSrc =
         new("""(<img\b[^>]*\bsrc\s*=\s*["'])(https?://[^"']+)(["'])""", RegexOptions.IgnoreCase);
 
@@ -485,9 +593,19 @@ public partial class MainWindow : Window
         if (MessageList.SelectedItem is not InboxRow row)
             return;
 
-        MessageDetail? detail = UseMockData
-            ? MockData.MessageBodies.GetValueOrDefault(row.Id)
-            : await _bridge.OpenMessageAsync(row.Id);
+        // Opening a draft resumes editing it, rather than showing it as a read-only message.
+        if (_currentFolder == "Drafts" && _localBodies.TryGetValue(row.Id, out var draftDetail))
+        {
+            MessageList.SelectedItem = null;
+            OpenCompose(draftDetail.To, draftDetail.Subject, StripHtml(draftDetail.BodyHtml),
+                draftDetail.Cc, replacesDraftId: row.Id);
+            return;
+        }
+
+        MessageDetail? detail = _localBodies.GetValueOrDefault(row.Id)
+            ?? (UseMockData
+                ? MockData.MessageBodies.GetValueOrDefault(row.Id)
+                : await _bridge.OpenMessageAsync(row.Id));
         if (detail is null)
             return;
 
@@ -505,10 +623,49 @@ public partial class MainWindow : Window
         ReadingDate.Text = detail.Date;
         ReadingAvatarInitial.Text = row.Initial;
 
+        var attachments = detail.Attachments ?? [];
+        AttachmentList.ItemsSource = attachments;
+        AttachmentList.Visibility = attachments.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+
         var (safeHtml, hadRemoteImages) = SanitizeRemoteImages(detail.BodyHtml);
         _blockedImagesHtml = hadRemoteImages ? detail.BodyHtml : null;
         ImagesBlockedBar.Visibility = hadRemoteImages ? Visibility.Visible : Visibility.Collapsed;
         ReadingPane.NavigateToString(WrapHtml(safeHtml));
+    }
+
+    // Saves the attachment to a location the user picks. With sample data there's no real file
+    // behind it, so a readable placeholder is written — the picker/save path is the real flow.
+    private void Attachment_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not System.Windows.Controls.Button { Tag: MailAttachment attachment })
+            return;
+
+        var dialog = new Microsoft.Win32.SaveFileDialog
+        {
+            FileName = attachment.Name,
+            Title = "Save attachment",
+        };
+        if (dialog.ShowDialog(this) != true)
+            return;
+
+        try
+        {
+            if (UseMockData || string.IsNullOrEmpty(attachment.Url))
+            {
+                File.WriteAllText(dialog.FileName,
+                    $"Sample attachment: {attachment.Name} ({attachment.Size})\r\n" +
+                    "This placeholder stands in for the real file until live webmail data is wired up.\r\n");
+            }
+            else
+            {
+                _host.Core?.Navigate(attachment.Url); // Roundcube serves the real download
+            }
+            StatusText.Text = $"Saved {attachment.Name}";
+        }
+        catch (Exception ex)
+        {
+            StatusText.Text = $"Couldn't save: {ex.Message}";
+        }
     }
 
     private void ResetReadingPane()
@@ -516,6 +673,8 @@ public partial class MainWindow : Window
         _openRow = null;
         _openDetail = null;
         _blockedImagesHtml = null;
+        AttachmentList.ItemsSource = null;
+        AttachmentList.Visibility = Visibility.Collapsed;
         ImagesBlockedBar.Visibility = Visibility.Collapsed;
         EmptyState.Visibility = Visibility.Visible;
         ReadingCard.Visibility = Visibility.Collapsed;
@@ -585,6 +744,137 @@ public partial class MainWindow : Window
         RemoveMessage(row, "Deleted");
         e.Handled = true;
     }
+
+    // ---- Keyboard shortcuts (Gmail-style) ---------------------------------------------------
+
+    private bool _gPending;
+    private DispatcherTimer? _gPendingTimer;
+
+    private void MainWindow_PreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (ShortcutsOverlay.Visibility == Visibility.Visible)
+        {
+            if (e.Key is System.Windows.Input.Key.Escape or System.Windows.Input.Key.OemQuestion)
+            {
+                ShortcutsOverlay.Visibility = Visibility.Collapsed;
+                e.Handled = true;
+            }
+            return;
+        }
+
+        // Never hijack typing — only Escape (to clear/blur the search box) is handled while a
+        // text field has focus.
+        if (Keyboard.FocusedElement is System.Windows.Controls.TextBox)
+        {
+            if (e.Key == System.Windows.Input.Key.Escape)
+            {
+                SearchBox.Text = "";
+                Keyboard.ClearFocus();
+            }
+            return;
+        }
+
+        // '?' (Shift+/) opens the shortcut cheat sheet; plain '/' focuses search.
+        if (e.Key == System.Windows.Input.Key.OemQuestion)
+        {
+            if (Keyboard.Modifiers == ModifierKeys.Shift)
+                ShortcutsOverlay.Visibility = Visibility.Visible;
+            else
+                SearchBox.Focus();
+            e.Handled = true;
+            return;
+        }
+
+        // '#' (Shift+3) deletes, matching Gmail.
+        if (e.Key == System.Windows.Input.Key.D3 && Keyboard.Modifiers == ModifierKeys.Shift)
+        {
+            if (_openRow is not null)
+                RemoveOpenMessage("Deleted");
+            else if (MessageList.SelectedItem is InboxRow row)
+                RemoveMessage(row, "Deleted");
+            e.Handled = true;
+            return;
+        }
+
+        if (Keyboard.Modifiers != ModifierKeys.None)
+            return;
+
+        if (_gPending)
+        {
+            _gPending = false;
+            _gPendingTimer?.Stop();
+            switch (e.Key)
+            {
+                case System.Windows.Input.Key.I: SelectFolder("Inbox", FolderInbox); break;
+                case System.Windows.Input.Key.S: SelectFolder("Sent", FolderSent); break;
+                case System.Windows.Input.Key.D: SelectFolder("Drafts", FolderDrafts); break;
+                case System.Windows.Input.Key.T: SelectFolder("Trash", FolderTrash); break;
+            }
+            e.Handled = true;
+            return;
+        }
+
+        switch (e.Key)
+        {
+            case System.Windows.Input.Key.C:
+                OpenCompose();
+                e.Handled = true;
+                break;
+            case System.Windows.Input.Key.J:
+                SelectAdjacentMessage(1);
+                e.Handled = true;
+                break;
+            case System.Windows.Input.Key.K:
+                SelectAdjacentMessage(-1);
+                e.Handled = true;
+                break;
+            case System.Windows.Input.Key.U:
+                ResetReadingPane();
+                e.Handled = true;
+                break;
+            case System.Windows.Input.Key.R:
+                ReplyButton_Click(sender, e);
+                e.Handled = true;
+                break;
+            case System.Windows.Input.Key.A:
+                ReplyAllButton_Click(sender, e);
+                e.Handled = true;
+                break;
+            case System.Windows.Input.Key.F:
+                ForwardButton_Click(sender, e);
+                e.Handled = true;
+                break;
+            case System.Windows.Input.Key.E:
+                if (_openRow is not null)
+                    ArchiveButton_Click(sender, e);
+                e.Handled = true;
+                break;
+            case System.Windows.Input.Key.G:
+                _gPending = true;
+                _gPendingTimer ??= new DispatcherTimer { Interval = TimeSpan.FromSeconds(1.2) };
+                _gPendingTimer.Tick += (_, _) => { _gPending = false; _gPendingTimer!.Stop(); };
+                _gPendingTimer.Start();
+                e.Handled = true;
+                break;
+        }
+    }
+
+    private void SelectAdjacentMessage(int delta)
+    {
+        var items = _messagesView.Cast<InboxRow>().ToList();
+        if (items.Count == 0)
+            return;
+        var currentIndex = _openRow is null ? -1 : items.FindIndex(r => r.Id == _openRow.Id);
+        var nextIndex = Math.Clamp(currentIndex + delta, 0, items.Count - 1);
+        MessageList.SelectedItem = items[nextIndex];
+        MessageList.ScrollIntoView(items[nextIndex]);
+    }
+
+    private void CloseShortcutsOverlay_Click(object sender, RoutedEventArgs e) =>
+        ShortcutsOverlay.Visibility = Visibility.Collapsed;
+
+    private void ShortcutsButton_Click(object sender, RoutedEventArgs e) =>
+        ShortcutsOverlay.Visibility = Visibility.Visible;
 
     // ---- Window chrome --------------------------------------------------------------------
 

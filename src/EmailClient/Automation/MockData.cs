@@ -36,7 +36,8 @@ public static class MockData
             "Mid-semester exam schedule released",
             "Academic Office <academic@iitb.ac.in>",
             "Today, 10:42 AM",
-            "<p>Dear Student,</p><p>The mid-semester examination schedule for AY 2026-27 has been published on ASC. Please check your slot and report to the allotted room 15 minutes early.</p><p>Regards,<br/>Academic Office</p>"),
+            "<p>Dear Student,</p><p>The mid-semester examination schedule for AY 2026-27 has been published on ASC. Please check your slot and report to the allotted room 15 minutes early.</p><p>Regards,<br/>Academic Office</p>",
+            Attachments: [new MailAttachment("midsem-schedule.txt", "12 KB")]),
         ["m2"] = new MessageDetail(
             "Re: Extension for assignment 3",
             "Ananya Rao <ananya.rao@cse.iitb.ac.in>",
@@ -60,7 +61,8 @@ public static class MockData
             "Mon, 11:47 AM",
             "<p>Attaching the notes from today's sync. Key action items are highlighted in bold — please review before Thursday.</p>",
             To: "you@iitb.ac.in",
-            Cc: "priya.singh@iitb.ac.in, dev.patel@iitb.ac.in"),
+            Cc: "priya.singh@iitb.ac.in, dev.patel@iitb.ac.in",
+            Attachments: [new MailAttachment("meeting-notes.txt", "4 KB"), new MailAttachment("action-items.txt", "2 KB")]),
         ["m6"] = new MessageDetail(
             "Scheduled maintenance — webmail",
             "IT Services <itsc@iitb.ac.in>",

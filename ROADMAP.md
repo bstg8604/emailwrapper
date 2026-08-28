@@ -5,6 +5,10 @@ The app (currently named "Peacock", to be renamed later) is a custom WPF fronten
 
 The user now wants "every feature/option" — explicitly benchmarking against Gmail, Apple Mail, Outlook, and Betterbird/Thunderbird. This plan inventories that full feature set, grouped by priority, so it can be worked through systematically rather than as an unbounded, undefined blob of "more features." Nothing here is committed to blindly — the **Known open risk** from `PLAN.md` still applies: DomBridge automation against the real Roundcube instance needs live verification before any backend-touching feature (send, delete, mark-read, etc.) can be trusted end-to-end.
 
+> **Status note (2026-08-28):** items marked ✅ below are built and verified against sample
+> data — see `PROGRESS.md` for the current state, what was tested, and bugs fixed.
+> Everything backend-facing still depends on Tier 0.
+
 ## Priority tiers
 
 ### Tier 0 — Make the automation layer real (blocks everything backend-facing)
@@ -17,21 +21,24 @@ Currently `UseMockData = true` in `MainWindow.xaml.cs` short-circuits almost eve
 6. Attachments: list attachments on a scraped message, trigger a real download through Roundcube's own download link/button (WebView2 download events).
 
 ### Tier 1 — Core mail-client parity (Gmail / Outlook / Apple Mail / Betterbird baseline)
+- ✅ **Reply-all** — pre-fills To from sender, Cc from the original To+Cc.
+- ✅ **CC/BCC fields** in `ComposeWindow.xaml`, collapsed behind a "Cc/Bcc" toggle like Gmail.
+- ✅ **Multi-select in message list** — row checkboxes plus a bulk action bar (mark read / archive / delete / clear).
+- ✅ **Mark unread/read toggle** — auto-read on open, explicit "mark unread" action, live Inbox unread badge.
+- ✅ **Sort options** — date / sender / subject via the toolbar dropdown.
+- ✅ **Image/external-content blocking** — remote `<img>` srcs are swapped for a transparent pixel with a "Show images" bar (`SanitizeRemoteImages` in `MainWindow.xaml.cs`).
+- ✅ **Attachments (viewing)** — attachment chips in the reading pane; clicking opens a Save dialog. Sample data writes a placeholder file; the live path still needs Tier 0.
+- ✅ **Drafts (local)** — closing compose with unsent content saves to Drafts; reopening a draft resumes editing. Real Roundcube draft-save still pending Tier 0.
 - **Conversation/thread view** — group messages by subject/thread like Gmail, with expand/collapse.
-- **Reply-all** (currently only Reply and Forward exist in `MainWindow.xaml.cs`/`ComposeWindow`).
-- **CC/BCC fields** in `ComposeWindow.xaml` (collapsed by default, "Cc/Bcc" toggle link like Gmail).
 - **Attachments in Compose** — add via file picker, show as chips, remove before sending; requires driving Roundcube's real attachment upload input.
 - **Rich text formatting toolbar** in Compose (bold/italic/underline/lists/links) — Roundcube's HTML compose already has this; needs DomBridge to toggle it on and forward toolbar clicks, or a parallel WPF RichTextBox that gets serialized to HTML before send.
-- **Drafts auto-save** — periodically push compose state to Roundcube's draft-save action (or trigger it on window close).
-- **Full message actions**: mark unread/read toggle, flag/important marker, move to folder (drag-and-drop and a "Move to…" menu), print.
-- **Multi-select in message list** — checkboxes (Gmail-style hover checkbox) for bulk archive/delete/mark-read/move.
-- **Sort/view options** — by date/sender/subject/size; toggle conversation view on/off (Gmail lets you turn this off); reading-pane position (right vs. bottom vs. off, like Outlook).
-- **Image/external-content blocking** — Gmail/Outlook/Apple Mail all block remote images by default with a "Show images" bar; the reading pane's `NavigateToString` currently renders scraped HTML with no such gate.
+- **Remaining message actions**: flag/important marker, move to folder (drag-and-drop and a "Move to…" menu), print.
+- **View options** not yet done: toggle conversation view on/off; reading-pane position (right vs. bottom vs. off, like Outlook); sort by size.
 - **External link warning** — confirm before opening links from message bodies in the default browser.
 
 ### Tier 2 — Productivity features (what makes Gmail/Superhuman/Outlook feel fast)
-- **Keyboard shortcuts**, Gmail-style: `c` compose, `r`/`a`/`f` reply/reply-all/forward, `e` archive, `#` delete, `j`/`k` next/prev message, `u` back to list, `/` focus search, `gi`/`gs`/`gd`/`gt` go to Inbox/Sent/Drafts/Trash, `?` shortcut cheat-sheet overlay. (Delete-key and Ctrl+Enter/Esc in Compose already exist as a start.)
-- **Undo send** — a brief delay-and-cancel window after hitting Send (Gmail's signature feature), holding the message locally before actually driving Roundcube's send action.
+- ✅ **Keyboard shortcuts**, Gmail-style: `c` compose, `r`/`a`/`f` reply/reply-all/forward, `e` archive, `#` delete, `j`/`k` next/prev, `u` back to list, `/` focus search, `g` then `i`/`s`/`d`/`t` to switch folder, `?` cheat-sheet overlay (also reachable from the toolbar "?" button). Shortcuts are suppressed while a text field has focus.
+- ✅ **Undo send** — Send hands the message to `MainWindow`, which shows a 5-second snackbar with UNDO before actually dispatching; undo reopens the message in compose. Sent mail lands in the Sent folder.
 - **Snooze** — hide a message from Inbox until a later time (Gmail); purely a local UI/state feature since Roundcube has no native snooze — would need local scheduling + re-surfacing.
 - **Scheduled send** — pick a future send time; same local-scheduling approach as snooze.
 - **Signature** — configurable per-account signature auto-inserted into new/reply/forward compose bodies.
@@ -61,12 +68,24 @@ Currently `UseMockData = true` in `MainWindow.xaml.cs` short-circuits almost eve
 - **App naming** — still deferred per earlier conversation; needs to happen before icon/installer/branding work.
 
 ## Suggested working order
-Given Tier 0 blocks real functionality for nearly everything else, and the user has been alternating between "make it look good" and "add features," the recommended sequence is:
-1. Finish Tier 0 (needs a live login session from the user — I can't complete this alone).
-2. Pick a first slice of Tier 1 (Reply-all + CC/BCC + multi-select + mark read/unread are the highest-value, lowest-risk additions and mostly UI-only work on top of what exists).
-3. Layer in Tier 2 keyboard shortcuts and undo-send (high perceived-polish payoff for low implementation cost).
-4. Settings window + dark mode from Tier 3 (ties together every preference added along the way instead of bolting on more one-off flags).
-5. Naming/branding/installer (Tier 4) last, once the feature set stabilizes.
+
+**Done so far:** the first Tier 1 slice (reply-all, Cc/Bcc, multi-select, mark read/unread,
+sort, image blocking, attachments, local drafts) and the Tier 2 quick wins (keyboard
+shortcuts, undo send). See `PROGRESS.md`.
+
+**Remaining, in recommended order:**
+1. **Tier 0** — needs a live login session; can't be completed without the user. This is now
+   the main blocker: every feature above works against sample data only.
+2. Rest of Tier 1 — conversation view, compose attachments, rich text, move-to-folder, flags.
+3. Rest of Tier 2 — snooze, scheduled send, signatures, contacts autocomplete, advanced
+   search, rich toast notifications, taskbar unread badge.
+4. Tier 3 — settings window + dark mode first (gives every preference a home), then density,
+   multiple compose windows, offline cache, accessibility.
+5. Tier 4 — naming/branding, then icon, installer, auto-update.
+
+**Known gap worth fixing early in Tier 3:** icon-only buttons currently expose no accessible
+name (they rely on glyph + tooltip), which hurts screen readers *and* makes UI automation
+testing awkward — adding `AutomationProperties.Name` is cheap and pays off twice.
 
 ## Verification approach
 Since most of Tier 1+ is currently exercised through `UseMockData`, each feature should be built and demoed against `MockData.cs` first (fast iteration, no login needed), the same way Compose/reply/star/delete were validated in the current build. Backend-touching pieces (Tier 0, and any Tier 1+ feature once wired to real `DomBridge` calls) need a live-login pass per the "Known open risk" section of `PLAN.md` before being trusted.

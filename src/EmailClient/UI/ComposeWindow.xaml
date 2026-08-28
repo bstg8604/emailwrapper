@@ -1,0 +1,30 @@
+<Window x:Class="EmailClient.UI.ComposeWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="New message" Height="480" Width="640"
+        Background="White" FontFamily="Segoe UI"
+        WindowStartupLocation="CenterOwner">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBox x:Name="ToBox" Grid.Row="0" Margin="0,0,0,8" Padding="8"
+                 Tag="To" BorderBrush="#FFDDDDDD"/>
+        <TextBox x:Name="SubjectBox" Grid.Row="1" Margin="0,0,0,8" Padding="8"
+                 Tag="Subject" BorderBrush="#FFDDDDDD"/>
+        <TextBox x:Name="BodyBox" Grid.Row="2" Margin="0,0,0,8" Padding="8"
+                 AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"
+                 BorderBrush="#FFDDDDDD"/>
+
+        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button x:Name="SendButton" Content="Send" Padding="16,7" Margin="0,0,8,0"
+                    Background="#FF2F6FED" Foreground="White" BorderThickness="0"
+                    Click="SendButton_Click"/>
+            <Button Content="Cancel" Padding="16,7" Click="CancelButton_Click"/>
+        </StackPanel>
+    </Grid>
+</Window>

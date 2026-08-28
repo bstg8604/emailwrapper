@@ -205,6 +205,11 @@ public partial class MainWindow : Window
     /// </summary>
     private void InspectButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_host.Core is null)
+        {
+            StatusText.Text = "Automation page is still starting up — try again in a moment";
+            return;
+        }
         _host.Show();
         _host.Core.OpenDevToolsWindow();
     }

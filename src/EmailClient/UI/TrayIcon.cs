@@ -19,11 +19,16 @@ public sealed class TrayIcon : IDisposable
         _notifyIcon = new WinForms.NotifyIcon
         {
             Icon = new System.Drawing.Icon(iconPath),
-            Text = "IITB Webmail",
+            Text = "Peacock",
             Visible = true,
             ContextMenuStrip = menu
         };
         _notifyIcon.DoubleClick += (_, _) => Restore();
+        _notifyIcon.MouseClick += (_, e) =>
+        {
+            if (e.Button == WinForms.MouseButtons.Left)
+                Restore();
+        };
     }
 
     public event EventHandler? ExitRequested;

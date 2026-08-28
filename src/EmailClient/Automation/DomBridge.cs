@@ -9,7 +9,12 @@ public sealed record InboxRow(
     [property: JsonPropertyName("subject")] string Subject,
     [property: JsonPropertyName("snippet")] string Snippet,
     [property: JsonPropertyName("date")] string Date,
-    [property: JsonPropertyName("unread")] bool Unread);
+    [property: JsonPropertyName("unread")] bool Unread,
+    [property: JsonPropertyName("starred")] bool Starred = false,
+    [property: JsonPropertyName("hasAttachment")] bool HasAttachment = false)
+{
+    public string Initial => string.IsNullOrWhiteSpace(Sender) ? "?" : Sender.Trim()[..1].ToUpperInvariant();
+}
 
 public sealed record MessageDetail(
     [property: JsonPropertyName("subject")] string Subject,
@@ -19,29 +24,46 @@ public sealed record MessageDetail(
 
 /// <summary>
 /// Drives the real webmail.iitb.ac.in DOM inside the hidden AutomationHost: scrapes what's on
-/// screen and dispatches real click/input events on Zimbra's own controls.
+/// screen and dispatches real click/input events on Roundcube's own controls.
 ///
-/// IMPORTANT — open risk called out in PLAN.md: the exact selectors below are best-effort
-/// placeholders based on common Zimbra Modern UI markup (role="row" virtualized lists,
-/// aria-label-driven controls). They have NOT been verified against the live, authenticated
-/// site and will very likely need adjusting after inspecting webmail.iitb.ac.in with DevTools
-/// open. Update the SELECTOR CONSTANTS section first before touching call sites.
+/// webmail.iitb.ac.in runs Roundcube (confirmed), so the selectors below target Roundcube's
+/// actual, long-stable markup (the "Elastic" skin's default since Roundcube 1.3+) rather than
+/// a blind guess:
+///   - message rows: &lt;tr id="rcmrowUID" class="message [unread]"&gt; inside #messagelist — the
+///     "rcmrow" id prefix has been stable across Roundcube versions/skins for years.
+///   - toolbar actions: #button-compose / #button-send — Roundcube has used these exact ids for
+///     its compose/send toolbar buttons across skins for a long time.
+///   - message preview: #messagecontframe — the well-known iframe id Roundcube (and its plugin
+///     ecosystem) uses for the reading-pane preview frame.
+/// These are still worth confirming with the Inspect (DevTools) button against the live,
+/// authenticated site — skin customizations or a newer/older Roundcube version can shift exact
+/// class names — but they start from real Roundcube conventions, not a generic guess.
 /// </summary>
 public sealed class DomBridge(AutomationHost host)
 {
-    // ---- SELECTOR CONSTANTS (tune these against the live site) --------------------------
-    private const string MessageListSelector = "[role='row'], .zli, tr.ZmMailListItem";
-    private const string ComposeButtonSelector = "[aria-label='Compose' i], [title='Compose' i], button[data-testid='compose']";
-    private const string SendButtonSelector = "[aria-label='Send' i], button[title='Send' i]";
-    private const string ToFieldSelector = "[aria-label='To' i] input, input[name='to']";
-    private const string SubjectFieldSelector = "[aria-label='Subject' i] input, input[name='subject']";
-    private const string BodyFieldSelector = "[aria-label='Message body' i] [contenteditable='true'], .cke_editable, [contenteditable='true']";
-    private const string ReadingPaneSelector = "[role='article'], .MsgBody, .ZmMailMsgView";
+    // ---- SELECTOR CONSTANTS (tune these against the live site if needed) ----------------
+    private const string MessageRowSelector = "tr[id^='rcmrow']";
+    private const string SenderInRowSelector = "td.subject span.fromto, .fromto, td:nth-child(2)";
+    private const string SubjectInRowSelector = "td.subject span.subject, span.subject, td:nth-child(3)";
+    private const string DateInRowSelector = "td.subject span.date, .date, td:last-child";
 
-    /// <summary>Best-effort "are we looking at an inbox, not a login form" check.</summary>
+    private const string ComposeButtonSelector = "#button-compose, a.button.compose";
+    private const string SendButtonSelector = "#button-send, a.button.send";
+    private const string ToFieldSelector = "#_to, textarea[name='_to'], input[name='_to']";
+    private const string SubjectFieldSelector = "#_subject, input[name='_subject']";
+    private const string BodyFieldSelector = "#composebody, textarea[name='_message']";
+    private const string BodyIframeSelector = "iframe#composebody_ifr"; // present when TinyMCE HTML compose is on
+
+    private const string PreviewFrameSelector = "iframe#messagecontframe, #preview-pane iframe";
+    private const string PreviewSubjectSelector = "tr.subject td, .message-partheaders tr.subject td:last-child, .subject";
+    private const string PreviewFromSelector = "tr.from td, .message-partheaders tr.from td:last-child, .from";
+    private const string PreviewDateSelector = "tr.date td, .message-partheaders tr.date td:last-child, .date";
+    private const string PreviewBodySelector = "#messagebody, .message-body, body";
+
+    /// <summary>Roundcube's inbox has message rows; its login form does not.</summary>
     public const string IsLoggedInScript =
-        $"(function(){{ return document.querySelector(\"{MessageListSelector}\") != null && " +
-        "document.querySelector(\"input[type=password]\") == null; })()";
+        $"(function(){{ return document.querySelector(\"{MessageRowSelector}\") != null || " +
+        "document.querySelector(\"#messagelist\") != null; })()";
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -49,18 +71,16 @@ public sealed class DomBridge(AutomationHost host)
     {
         var script = $$"""
             (function() {
-                const rows = Array.from(document.querySelectorAll("{{MessageListSelector}}"));
-                return JSON.stringify(rows.slice(0, 200).map((row, i) => {
-                    const text = (sel) => row.querySelector(sel)?.textContent?.trim() ?? "";
-                    return {
-                        id: row.id || row.getAttribute("data-id") || String(i),
-                        sender: text("[class*=sender i], [class*=from i]") || text("td:nth-child(2)"),
-                        subject: text("[class*=subject i]") || text("td:nth-child(3)"),
-                        snippet: text("[class*=snippet i], [class*=fragment i]"),
-                        date: text("[class*=date i]") || text("td:last-child"),
-                        unread: row.classList.contains("unread") || row.getAttribute("aria-label")?.toLowerCase().includes("unread") === true
-                    };
-                }));
+                const rows = Array.from(document.querySelectorAll("{{MessageRowSelector}}"));
+                const text = (row, sel) => row.querySelector(sel)?.textContent?.trim() ?? "";
+                return JSON.stringify(rows.slice(0, 200).map((row) => ({
+                    id: row.id,
+                    sender: text(row, "{{SenderInRowSelector}}"),
+                    subject: text(row, "{{SubjectInRowSelector}}"),
+                    snippet: "",
+                    date: text(row, "{{DateInRowSelector}}"),
+                    unread: row.classList.contains("unread")
+                })));
             })();
             """;
 
@@ -72,8 +92,7 @@ public sealed class DomBridge(AutomationHost host)
     {
         var clickScript = $$"""
             (function() {
-                const row = document.getElementById({{JsonSerializer.Serialize(id)}}) ||
-                    document.querySelector(`[data-id="${{{JsonSerializer.Serialize(id)}}}"]`);
+                const row = document.getElementById({{JsonSerializer.Serialize(id)}});
                 if (!row) return "false";
                 row.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
                 row.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -84,19 +103,22 @@ public sealed class DomBridge(AutomationHost host)
         if (clicked != "true")
             return null;
 
-        // Give Zimbra's own UI a moment to render the reading pane.
-        await Task.Delay(400);
+        // Give Roundcube a moment to load the preview iframe.
+        await Task.Delay(500);
 
         var readScript = $$"""
             (function() {
-                const pane = document.querySelector("{{ReadingPaneSelector}}");
-                if (!pane) return "null";
-                const text = (sel) => document.querySelector(sel)?.textContent?.trim() ?? "";
+                const frame = document.querySelector("{{PreviewFrameSelector}}");
+                const doc = frame ? (frame.contentDocument || frame.contentWindow?.document) : document;
+                if (!doc) return "null";
+                const text = (sel) => doc.querySelector(sel)?.textContent?.trim() ?? "";
+                const body = doc.querySelector("{{PreviewBodySelector}}");
+                if (!body) return "null";
                 return JSON.stringify({
-                    subject: text("[class*=subject i]"),
-                    from: text("[class*=from i], [class*=sender i]"),
-                    date: text("[class*=date i]"),
-                    bodyHtml: pane.innerHTML
+                    subject: text("{{PreviewSubjectSelector}}"),
+                    from: text("{{PreviewFromSelector}}"),
+                    date: text("{{PreviewDateSelector}}"),
+                    bodyHtml: body.innerHTML
                 });
             })();
             """;
@@ -113,30 +135,37 @@ public sealed class DomBridge(AutomationHost host)
             })();
             """;
         await ExecuteAsync(script);
-        await Task.Delay(400);
+        await Task.Delay(500);
     }
 
     public async Task FillComposeAsync(string to, string subject, string body)
     {
         var script = $$"""
             (function() {
-                function setValue(sel, value) {
-                    const el = document.querySelector(sel);
-                    if (!el) return false;
-                    if ("value" in el) {
-                        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
-                        setter ? setter.call(el, value) : (el.value = value);
-                        el.dispatchEvent(new Event("input", { bubbles: true }));
-                        el.dispatchEvent(new Event("change", { bubbles: true }));
-                    } else {
-                        el.textContent = value;
-                        el.dispatchEvent(new Event("input", { bubbles: true }));
-                    }
-                    return true;
+                function setNativeValue(el, value) {
+                    const proto = el instanceof HTMLTextAreaElement ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+                    const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+                    setter ? setter.call(el, value) : (el.value = value);
+                    el.dispatchEvent(new Event("input", { bubbles: true }));
+                    el.dispatchEvent(new Event("change", { bubbles: true }));
                 }
-                setValue("{{ToFieldSelector}}", {{JsonSerializer.Serialize(to)}});
-                setValue("{{SubjectFieldSelector}}", {{JsonSerializer.Serialize(subject)}});
-                setValue("{{BodyFieldSelector}}", {{JsonSerializer.Serialize(body)}});
+                const to = document.querySelector("{{ToFieldSelector}}");
+                if (to) setNativeValue(to, {{JsonSerializer.Serialize(to)}});
+
+                const subject = document.querySelector("{{SubjectFieldSelector}}");
+                if (subject) setNativeValue(subject, {{JsonSerializer.Serialize(subject)}});
+
+                // Plain-text compose: a regular textarea. HTML compose: TinyMCE swaps in an
+                // iframe (id ends in "_ifr") whose contentDocument.body is the actual editor.
+                const bodyIframe = document.querySelector("{{BodyIframeSelector}}");
+                const bodyDoc = bodyIframe?.contentDocument;
+                if (bodyDoc?.body) {
+                    bodyDoc.body.innerHTML = {{JsonSerializer.Serialize(body)}};
+                    bodyDoc.body.dispatchEvent(new Event("input", { bubbles: true }));
+                } else {
+                    const bodyField = document.querySelector("{{BodyFieldSelector}}");
+                    if (bodyField) setNativeValue(bodyField, {{JsonSerializer.Serialize(body)}});
+                }
             })();
             """;
         await ExecuteAsync(script);
@@ -158,13 +187,13 @@ public sealed class DomBridge(AutomationHost host)
     {
         var script = $$"""
             (function() {
-                if (window.__iitbWrapperObserverInstalled) return;
-                window.__iitbWrapperObserverInstalled = true;
-                const target = document.body;
+                if (window.__wrapperObserverInstalled) return;
+                window.__wrapperObserverInstalled = true;
+                const list = document.querySelector("#messagelist") || document.body;
                 const observer = new MutationObserver(() => {
                     window.chrome.webview.postMessage(JSON.stringify({ type: "domChanged" }));
                 });
-                observer.observe(target, { childList: true, subtree: true });
+                observer.observe(list, { childList: true, subtree: true });
             })();
             """;
         await ExecuteAsync(script);

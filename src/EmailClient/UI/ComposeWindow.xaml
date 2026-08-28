@@ -1,30 +1,132 @@
 <Window x:Class="EmailClient.UI.ComposeWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="New message" Height="480" Width="640"
+        xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
+        Title="New message" Height="560" Width="680" MinWidth="480" MinHeight="360"
+        WindowStyle="None" ResizeMode="CanResizeWithGrip"
         Background="White" FontFamily="Segoe UI"
         WindowStartupLocation="CenterOwner">
-    <Grid Margin="16">
-        <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="*"/>
-            <RowDefinition Height="Auto"/>
-        </Grid.RowDefinitions>
 
-        <TextBox x:Name="ToBox" Grid.Row="0" Margin="0,0,0,8" Padding="8"
-                 Tag="To" BorderBrush="#FFDDDDDD"/>
-        <TextBox x:Name="SubjectBox" Grid.Row="1" Margin="0,0,0,8" Padding="8"
-                 Tag="Subject" BorderBrush="#FFDDDDDD"/>
-        <TextBox x:Name="BodyBox" Grid.Row="2" Margin="0,0,0,8" Padding="8"
-                 AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"
-                 BorderBrush="#FFDDDDDD"/>
+    <shell:WindowChrome.WindowChrome>
+        <shell:WindowChrome CaptionHeight="38" ResizeBorderThickness="6" GlassFrameThickness="0"/>
+    </shell:WindowChrome.WindowChrome>
 
-        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right">
-            <Button x:Name="SendButton" Content="Send" Padding="16,7" Margin="0,0,8,0"
-                    Background="#FF2F6FED" Foreground="White" BorderThickness="0"
-                    Click="SendButton_Click"/>
-            <Button Content="Cancel" Padding="16,7" Click="CancelButton_Click"/>
-        </StackPanel>
-    </Grid>
+    <Window.Resources>
+        <SolidColorBrush x:Key="AccentBrush" Color="#FF6D28D9"/>
+
+        <Style x:Key="FieldBox" TargetType="TextBox">
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="0,9"/>
+            <Setter Property="FontSize" Value="13.5"/>
+            <Setter Property="Background" Value="Transparent"/>
+        </Style>
+        <Style x:Key="FieldLabel" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#FF9A9A9A"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="Width" Value="60"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+        <Style x:Key="WindowGlyphButton" TargetType="Button">
+            <Setter Property="Width" Value="38"/>
+            <Setter Property="Height" Value="38"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="#FF666666"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="FontFamily" Value="Segoe Fluent Icons, Segoe MDL2 Assets"/>
+            <Setter Property="FontSize" Value="10"/>
+            <Setter Property="shell:WindowChrome.IsHitTestVisibleInChrome" Value="True"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#FFE81123"/>
+                                <Setter TargetName="Bd" Property="TextElement.Foreground" Value="White"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <Border BorderBrush="#FFE2E2E2" BorderThickness="1">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="38"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <!-- Custom title bar -->
+            <Grid Grid.Row="0" Background="White">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="New message" Margin="16,0,0,0" VerticalAlignment="Center"
+                           Foreground="#FF555555" FontSize="12.5" FontWeight="SemiBold"/>
+                <Button Grid.Column="1" Content="&#xE8BB;" Style="{StaticResource WindowGlyphButton}" Click="CancelButton_Click"/>
+            </Grid>
+            <Border Grid.Row="0" VerticalAlignment="Bottom" Height="1" Background="#FFF0F0F0"/>
+
+            <!-- Fields -->
+            <StackPanel Grid.Row="1" Margin="24,16,24,0">
+                <Grid Margin="0,0,0,2">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="To" Style="{StaticResource FieldLabel}"/>
+                    <TextBox x:Name="ToBox" Grid.Column="1" Style="{StaticResource FieldBox}"/>
+                </Grid>
+                <Border Height="1" Background="#FFF0F0F0"/>
+
+                <Grid Margin="0,2">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="Subject" Style="{StaticResource FieldLabel}"/>
+                    <TextBox x:Name="SubjectBox" Grid.Column="1" Style="{StaticResource FieldBox}"/>
+                </Grid>
+                <Border Height="1" Background="#FFF0F0F0"/>
+
+                <TextBox x:Name="BodyBox" Margin="0,14,0,0" BorderThickness="0" FontSize="13.5"
+                         AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"
+                         Height="280"/>
+            </StackPanel>
+
+            <!-- Actions -->
+            <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="24,12,24,20">
+                <Button Content="Cancel" Padding="16,8" Margin="0,0,8,0" Background="#FFF3F3F3"
+                        Foreground="#FF555555" BorderThickness="0" Cursor="Hand" Click="CancelButton_Click">
+                    <Button.Template>
+                        <ControlTemplate TargetType="Button">
+                            <Border Background="{TemplateBinding Background}" CornerRadius="7" Padding="{TemplateBinding Padding}">
+                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                        </ControlTemplate>
+                    </Button.Template>
+                </Button>
+                <Button x:Name="SendButton" Padding="18,8" Background="{StaticResource AccentBrush}"
+                        Foreground="White" BorderThickness="0" Cursor="Hand" Click="SendButton_Click">
+                    <Button.Template>
+                        <ControlTemplate TargetType="Button">
+                            <Border Background="{TemplateBinding Background}" CornerRadius="7" Padding="{TemplateBinding Padding}">
+                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                        </ControlTemplate>
+                    </Button.Template>
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="Send" VerticalAlignment="Center"/>
+                        <TextBlock Text="&#xE724;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="12" Margin="8,0,0,0" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </Button>
+            </StackPanel>
+        </Grid>
+    </Border>
 </Window>

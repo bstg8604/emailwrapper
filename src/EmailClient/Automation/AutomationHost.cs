@@ -1,4 +1,5 @@
 using System.Windows;
+using System.Windows.Threading;
 using EmailClient.Settings;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.Wpf;
@@ -14,6 +15,8 @@ public sealed class AutomationHost : Window
     public const string WebmailUrl = "https://webmail.iitb.ac.in/";
 
     private readonly WebView2 _webView = new();
+    private readonly DispatcherTimer _loginPoll;
+    private bool _loggedInFired;
 
     public event EventHandler? LoggedIn;
     public event EventHandler<string>? PageMessageReceived;
@@ -22,12 +25,18 @@ public sealed class AutomationHost : Window
 
     public AutomationHost()
     {
-        Title = "IITB Webmail — Sign in";
+        Title = "Peacock — Sign in to webmail.iitb.ac.in";
         Width = 480;
         Height = 640;
         Content = _webView;
         // Shown centered for login; hidden entirely once authenticated.
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
+
+        // Full-page-reload logins are caught by NavigationCompleted, but Roundcube's login
+        // could also complete via an AJAX request with no page reload — a short poll while
+        // not yet logged in catches that case too, without depending on any specific flow.
+        _loginPoll = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
+        _loginPoll.Tick += async (_, _) => await CheckLoginStateAsync();
     }
 
     public async Task InitializeAsync()
@@ -40,30 +49,31 @@ public sealed class AutomationHost : Window
         _webView.CoreWebView2.WebMessageReceived += (_, e) =>
             PageMessageReceived?.Invoke(this, e.WebMessageAsJson);
 
-        _webView.CoreWebView2.NavigationCompleted += OnNavigationCompleted;
+        _webView.CoreWebView2.NavigationCompleted += async (_, e) =>
+        {
+            if (e.IsSuccess)
+                await CheckLoginStateAsync();
+        };
 
         _webView.CoreWebView2.Navigate(WebmailUrl);
+        _loginPoll.Start();
     }
 
-    private bool _loggedInFired;
-
-    private async void OnNavigationCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs e)
+    private async Task CheckLoginStateAsync()
     {
-        if (!e.IsSuccess || _loggedInFired)
+        if (_loggedInFired)
             return;
 
-        // Heuristic check for a logged-in inbox vs. a login form. Zimbra's exact markup
-        // needs live confirmation — see DomBridge.IsLoggedInScript for the selector.
+        // Heuristic check for a logged-in inbox vs. a login form (Roundcube's #messagelist /
+        // "rcmrow" markup) — see DomBridge.IsLoggedInScript for the selector.
         var result = await _webView.CoreWebView2.ExecuteScriptAsync(DomBridge.IsLoggedInScript);
-        if (result.Trim('"') == "true")
-        {
-            _loggedInFired = true;
-            LoggedIn?.Invoke(this, EventArgs.Empty);
-        }
-    }
+        if (result.Trim('"') != "true")
+            return;
 
-    /// <summary>Re-check login state after a manual navigation (e.g. user just submitted the login form).</summary>
-    public void RecheckLoginState() => _loggedInFired = false;
+        _loggedInFired = true;
+        _loginPoll.Stop();
+        LoggedIn?.Invoke(this, EventArgs.Empty);
+    }
 
     public Task<string> ExecuteScriptAsync(string script) => _webView.CoreWebView2.ExecuteScriptAsync(script);
 

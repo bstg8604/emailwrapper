@@ -1,8 +1,63 @@
 # Progress Report
 
-**Project:** Peacock (working name) — custom desktop frontend for webmail.iitb.ac.in
-**Last updated:** 2026-08-28
+**Project:** Peacock (working name) — custom desktop email client for the user's IITB mailbox
+**Last updated:** 2026-08-29
 **Repo:** https://github.com/bstg8604/emailwrapper
+
+> **Architecture change (2026-08-29, later same day):** the app was rewritten from a
+> webmail-automation wrapper (WebView2 puppeting Roundcube's own UI) to a real IMAP/SMTP client
+> (MailKit). The user confirmed their IITB credentials already work in Thunderbird, Betterbird and
+> Gmail over IMAP/SMTP from off-campus, and a direct probe confirmed `imap.iitb.ac.in:993`
+> answers with a live IMAP banner from outside the campus network — which made the wrapper's
+> WebView2-puppeting approach unnecessary complexity for a server that was reachable directly the
+> whole time. See `PLAN.md` for the full rationale and the new architecture; the section below is
+> superseded except where it describes UI/UX still shared with the new build.
+
+> **Build environment note (2026-08-29):** this machine had **no .NET SDK** — only the .NET 6
+> runtime under `C:\Program Files\dotnet`, despite `PLAN.md` claiming .NET 9 was installed.
+> The .NET 9 SDK (9.0.317) is now installed **per-user** at `%LOCALAPPDATA%\Microsoft\dotnet`.
+> Consequences:
+> - Build with `%LOCALAPPDATA%\Microsoft\dotnet\dotnet.exe build EmailClient.sln`
+>   (the `dotnet` on PATH is the old .NET 6 host and will say "No .NET SDKs were found").
+> - To **run** the built exe, set `DOTNET_ROOT=%LOCALAPPDATA%\Microsoft\dotnet` first, or the
+>   apphost looks in `C:\Program Files\dotnet`, finds only .NET 6, and exits immediately.
+> - Double-clicking the exe won't work until either the .NET 9 Desktop Runtime is installed
+>   machine-wide or the app is published self-contained (see Tier 4 in `ROADMAP.md`).
+>
+> `git` is also not on PATH; GitHub Desktop bundles one at
+> `%LOCALAPPDATA%\GitHubDesktop\app-3.6.4\resources\app\git\cmd\git.exe`.
+
+---
+
+## Current state (IMAP rewrite)
+
+Builds clean: **0 warnings, 0 errors.** Runs on sample data by default; a "Sign in" button in the
+toolbar (where "Inspect webmail" used to be) opens a credentials dialog, connects over IMAP/SMTP
+via MailKit, and switches the whole UI to the real mailbox on success.
+
+**What's new:**
+- `Mail/ImapMailBackend.cs` — real IMAP (list folders, list/open messages, flags, move/delete/
+  archive, save draft) and SMTP (send, with a Sent-folder copy appended afterward since plain
+  SMTP doesn't file one itself).
+- `Mail/AccountSettings.cs` — credentials persisted via Windows DPAPI, never plaintext.
+- `Mail/LoginWindow.xaml` — sign-in dialog with an expandable "Server settings" section for
+  IMAP/SMTP host and port.
+- `Mail/ContactsIndex.cs` — recipient autocomplete built from Sent/Inbox headers (no institute
+  LDAP directory is reachable off-campus — see `PLAN.md`), wired into `ComposeWindow`'s To/Cc/Bcc
+  fields as a dropdown.
+- `Automation/DomBridge.cs` and `Automation/AutomationHost.cs` (the WebView2-puppeting layer) are
+  **deleted**. Their row/message/folder record types moved to `Automation/MailModels.cs`, which
+  both the mock and live backends share.
+
+**Not yet done:**
+- SMTP host/port are best-guess defaults (`smtp-auth.iitb.ac.in:587`, STARTTLS) — need
+  confirming against the user's known-working Thunderbird/Betterbird settings, editable in the
+  sign-in dialog without a rebuild.
+- Live refresh polls every 60s rather than using IMAP IDLE for instant push.
+- Not yet tested against a real account (needs the user's own credentials, at the keyboard).
+
+Everything below this point describes the earlier webmail-wrapper architecture and is retained
+for history; see `PLAN.md`'s "Known open items" for the current list.
 
 ---
 
@@ -89,23 +144,201 @@ Tested end-to-end via UI Automation (`SelectionItemPattern` / `InvokePattern` /
 
 ---
 
+## Tier 0 — automation layer (added 2026-08-29)
+
+Everything Tier 0 needs is now **written and compiling**; what remains is live verification
+against the authenticated site, which needs a real login.
+
+**`Automation/DomBridge.cs`** — rewritten from a scrape-and-click stub into the full
+operation surface, with a deliberate **two-tier strategy**: every action first dispatches a
+real click on the actual Roundcube control (the middleman behaviour `PLAN.md` specifies), and
+only falls back to `rcmail.command(...)` — Roundcube's own client-side dispatcher, the exact
+function its buttons call — when that control isn't present in this skin.
+
+- `ListFoldersAsync` / `SelectFolderAsync` / `GetSpecialMailboxesAsync` — real folder
+  navigation. Special-folder names come from Roundcube's own `env` (`sent_mailbox`,
+  `drafts_mailbox`, …) rather than being guessed, since servers disagree
+  ("Sent" vs "INBOX.Sent" vs "Sent Items").
+- `ListMessagesAsync` — returns a `MessagePage` (rows + page/pageCount/total/mailbox), so the
+  UI knows where it is in a folder instead of just seeing whatever rows are rendered.
+- `NextPageAsync` / `PreviousPageAsync` — pagination via Roundcube's own pager.
+- `SetReadAsync` / `SetFlaggedAsync` — click the row's real status/flag icon, verify the row
+  class actually changed, fall back to the mark command if it didn't.
+- `DeleteAsync` / `ArchiveAsync` / `MoveToFolderAsync` — archive degrades to a plain move into
+  the Archive mailbox when the archive plugin isn't installed.
+- `ClickSaveDraftAsync` — drafts now reach the real Drafts folder.
+- `OpenMessageAsync` — waits for the preview frame to actually be showing *that* uid instead
+  of a fixed 500 ms guess, and finds attachments in both the frame and the top document.
+- **Session-expiry recovery**: every injected script starts with a login-form guard. On a hit,
+  the bridge asks `AutomationHost` to re-show itself for a real re-login, then **retries the
+  same script** — so an expiry mid-action resumes instead of losing the user's click.
+  Dismissing the login window resolves it cleanly as `SessionExpiredException`.
+- Waiting is done by polling from C#, because WebView2 won't unwrap a Promise returned from
+  an injected script.
+
+**`Automation/AutomationHost.cs`** — `RecoverSessionAsync` (shared by concurrent callers),
+a `SessionExpired` event, and real attachment downloads via `CoreWebView2.DownloadStarting`.
+The download is issued from a **throwaway hidden iframe** inside the live page rather than by
+navigating it: an attachment URL that unexpectedly rendered inline would otherwise navigate the
+automation page off the mailbox and break the session the whole app depends on.
+
+**`MainWindow`** — every action now routes through the bridge in live mode instead of being
+local-only: folder switching, pagination (new pager bar), star, mark read/unread, delete,
+archive, move-to-folder (new menu, scoped to checked rows or the open message), bulk actions,
+and attachment saving. The sidebar gained a live section listing the account's **real** IMAP
+folders (indented by depth, with unread badges) below the fixed five. "Starred" has no
+Roundcube equivalent, so in live mode it means "flagged messages in Inbox" rather than a fake
+folder. Failures say *which* selector to check with Inspect (DevTools) instead of failing silently.
+
+### Also fixed
+- **Reading pane was unreadable on a dark-mode PC** — WebView2 followed the OS theme and
+  painted the message background black behind dark message text. The wrapper now pins an
+  explicit light palette and `color-scheme`, plus width rules so wide tables/images don't force
+  sideways scrolling.
+- **Icon-only buttons had no accessible name** (the "cheap, pays off twice" gap called out in
+  `ROADMAP.md`) — 20 of them now carry `AutomationProperties.Name`, which helps screen readers
+  and made the new move-to-folder flow testable via UI Automation.
+
+### Verified this pass (sample data, via UI Automation + screenshots)
+- Builds clean: 0 warnings, 0 errors.
+- Launches, renders, and stays stable unattended.
+- Message open → reading pane renders **on a white background with readable text**.
+- Remote-image blocking still fires ("Images are hidden to protect your privacy" + Show images).
+- Folder switching via `g`+`s` → Sent loads, reading pane resets.
+- Move-to-folder: menu lists the right targets (current folder excluded), message leaves the
+  list, lands in the target, status confirms, reading pane resets.
+
+---
+
+## Sample-data polish pass (2026-08-29)
+
+The dummy data and the options acting on it were inconsistent with each other. Fixed:
+
+**Reply / reply-all / forward actually carry the original.** They used to insert a bare
+`---- Original message ----` line with nothing under it. Now:
+- Reply quotes the original beneath an attribution line (`On <date>, <sender> wrote:`) with
+  `> ` prefixes, and opens the caret **above** the quote where the reply gets written.
+- Reply-all builds Cc from the original To+Cc, dropping the user's own address *and* the
+  original sender (who has been promoted to To) — previously it copied you on your own mail.
+- Forward carries a real header block (From / Date / Subject / To / Cc / attachment names)
+  followed by the original text.
+- Subjects no longer stack up: replying to "Re: x" stays "Re: x", not "Re: Re: x".
+
+**`Automation/MailText.cs` (new)** — one HTML→plain-text implementation shared by list
+snippets, reply/forward quoting and the draft round-trip, so a row can't preview text that
+differs from what the quote produces. Handles block structure, lists, entities and
+whitespace collapsing.
+
+**`MockData.cs` rewritten** around a single `MockMessage` record that yields *both* the list
+row and the reading-pane body, so snippets, dates and attachment markers can't drift from the
+message they describe. Also:
+- Dates are **relative to now** ("8:42 AM", "Yesterday", "Wed") instead of hardcoded strings
+  that would age into nonsense.
+- 17 messages across Inbox / Sent / Drafts / Archive / Trash, with To and Cc populated so
+  reply-all has something real to do, threaded subjects, multiple attachments, a long message,
+  a remote-image message, and a no-subject draft.
+- Sent and Drafts rows show the **recipient**, not "You" — showing your own name on every row
+  of your own Sent folder tells you nothing.
+
+**Options that now actually work on sample data**
+- **Sort by date** sorts for real. `InboxRow` gained a nullable `Timestamp`; live rows leave it
+  null and keep Roundcube's own ordering rather than being scrambled by an unparseable label.
+- **Archive is no longer a black hole** — there's a real Archive folder in the sidebar (`g` `a`),
+  and archiving files messages there instead of deleting them.
+- **Search** matches the body snippet, not just sender and subject.
+- **Seeded drafts open for editing** like locally saved ones did, instead of opening read-only.
+- **Drafts keep their Bcc** across a save/reopen (`MessageDetail` gained a `Bcc`).
+- **Starred** excludes Trash, so deleted mail doesn't resurface there.
+- Avatar initials skip punctuation instead of rendering "(" for "(no recipient)".
+
+**Attachments open inside the app** (`UI/AttachmentViewerWindow.xaml`). Clicking a chip used to
+jump straight to a Save dialog; it now opens a viewer window matching the app's chrome, with
+Save-a-copy and Open-externally as secondary actions.
+- **PDFs** render in Edge's own viewer (paging, zoom, search, print) — free, and better than
+  anything hand-rolled.
+- **Images** are inlined as a data URI onto the app's light backdrop. Navigating straight to the
+  file would use WebView2's built-in image view, which follows the OS theme and drops a black
+  page into the middle of an otherwise light app. Files over 8 MB skip the inlining.
+- **Text-like files** (txt, csv, md, json, xml, log, source) render as escaped monospace text.
+- **HTML and SVG attachments are shown as source, never executed** — attachment content is
+  untrusted, and rendering its markup to preview it is exactly what a malicious mail wants.
+- Anything else gets an honest "no preview for X files" with Save still available.
+- Files land in `%LOCALAPPDATA%\IITBWebmailWrapper\attachments`, not the user's Downloads folder
+  — opening a mail shouldn't quietly litter it.
+- Live attachments flow through the same viewer: `ResolveAttachmentAsync` downloads via the
+  authenticated session first, then opens the identical window.
+
+**`Automation/SampleAttachments.cs` (new)** generates *real* files behind the sample
+attachments — a genuine single-page PDF (cross-reference offsets computed as the file is
+written, since a wrong offset is what makes a hand-built PDF fail to open), a real PNG drawn
+with System.Drawing, and text files with content matching the message that carries them. A
+sample PDF that isn't a real PDF would only prove the viewer can show an error. Chip sizes are
+taken from the generated file rather than a hardcoded string, so they can't disagree.
+
+**Compose is now a real editor** (`UI/ComposeWindow`). The body was a plain `TextBox` with no
+formatting whatsoever. It is now a WebView2 `contenteditable` surface — chosen over a WPF
+`RichTextBox` because the message has to *leave* as HTML (that is what Roundcube's compose form
+accepts and what the reading pane renders), so a contenteditable produces it directly instead of
+needing a FlowDocument-to-HTML conversion layer. Spell-check, undo/redo and paste handling come
+with it.
+
+- **Formatting toolbar**: bold / italic / underline / strikethrough, bulleted and numbered lists,
+  indent and outdent, block quote, alignment, font size, text colour, insert link, clear
+  formatting. Ctrl+B/I/U work natively.
+- **Rich quoting**: replies and forwards now put the original in a real `<blockquote>` that keeps
+  its own bold, lists and structure, rather than flattening it to `> ` lines. Images are stripped
+  from quotes — a remote image would phone home the moment the compose window opened.
+- **Link insertion is scheme-checked**: only http, https and mailto. A `javascript:` href typed in
+  here would otherwise be handed straight to the recipient.
+- **Attachments**: Attach-files button *and* drag-and-drop onto the window, chips with real sizes,
+  per-chip remove. `AllowExternalDrop="False"` on the editor so dropped files become attachments
+  instead of navigating the editor.
+- **Plain-text toggle** — switching down converts the HTML to text and hides the toolbar;
+  switching back re-wraps it.
+- **Explicit Save draft and Discard.** Discard confirms, then genuinely discards; previously any
+  close with content silently became a draft with no way to refuse.
+- Falls back to a plain `TextBox` if WebView2 fails to start, rather than leaving a compose window
+  that can't be typed into.
+
+`ComposeResult` now carries `BodyHtml` and the staged attachments alongside the plain-text body.
+Sample sends stage their files into the attachment cache so a "sent" message can still open its
+own attachments afterwards. `DomBridge.FillComposeAsync` takes both bodies and only uses the HTML
+where TinyMCE is active — dropping markup into a plain-text textarea would send the tags as
+literal text. `DomBridge.AttachFileAsync` uploads through Roundcube's own file input via a
+`DataTransfer` (the one way script can populate a file input in Chromium) — **not yet live-verified.**
+
+### Verified (UI Automation, reading the actual compose fields)
+- Reply-all on a Cc'd message → To = sender, Cc = original Cc with self removed, subject not
+  re-prefixed, body carries the full quoted original.
+- Forward → complete header block including both attachment names, body intact.
+- Reply → quoted bullet list renders one line per item.
+- Inbox shows 8 messages with live relative dates and derived snippets; Archive folder present.
+- Attachment viewer opens a PDF (Edge viewer, correct content), a PNG (on the app backdrop) and
+  a .txt (monospace) — each showing the real file size.
+- Reply-all → compose opens with the quoted original as a formatted blockquote; Send → the copy
+  in Sent still carries the blockquote, bold names and bullet list, proving the HTML round-trips
+  editor → result → message store → reading pane.
+
+---
+
 ## Not done yet
 
-**Blocking everything backend-facing (Tier 0 in `ROADMAP.md`):**
-The `DomBridge` selectors target Roundcube's real, documented markup conventions
-(`tr[id^=rcmrow]`, `#button-compose`, `#messagecontframe`) but have **not been verified
-against the live authenticated site**. Until that's done, nothing actually touches real mail.
-This needs a live login — use the toolbar's **Inspect webmail (DevTools)** button to inspect
-the real DOM, then the selector constants at the top of `Automation/DomBridge.cs` can be
-corrected.
+**Tier 0's one remaining item — live selector verification.** The selectors target Roundcube's
+real, documented markup conventions (`tr[id^=rcmrow]`, `a[rel="MBOX"]`, `#button-compose`,
+`#messagecontframe`) but have **not been checked against the live authenticated site**. Until
+that's done, nothing has been proven to touch real mail. Use the toolbar's **Inspect webmail
+(DevTools)** button after signing in, then correct the selector constants at the top of
+`Automation/DomBridge.cs` — they are all grouped there for exactly this.
 
-Also still open: real folder navigation, pagination, real attachments download, conversation
-threading, rich-text compose, contacts autocomplete, snooze / scheduled send, signatures,
-dark mode, settings window, installer, and app naming. Full list in `ROADMAP.md`.
+Note `UseMockData` in `MainWindow.xaml.cs` is still `true`; flip it to `false` for the live pass.
+
+Also still open: conversation threading, compose attachments, rich-text compose, contacts
+autocomplete, snooze / scheduled send, signatures, dark mode, settings window, installer, and
+app naming. Full list in `ROADMAP.md`.
 
 ---
 
 ## Next step
 
-Finish **Tier 0** (needs a live login session), or continue with more Tier 1/2 UI work on
-sample data — both paths are laid out in `ROADMAP.md`.
+The live-login pass. Set `UseMockData = false`, sign in once, and walk the bridge operations
+with DevTools open — that converts every Tier 0 item above from "written" to "working".

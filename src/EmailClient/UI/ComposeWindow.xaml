@@ -1,40 +1,196 @@
 <Window x:Class="EmailClient.UI.ComposeWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
-        Title="New message" Height="560" Width="680" MinWidth="480" MinHeight="360"
+        Title="New message" Height="680" Width="950" MinWidth="680" MinHeight="440"
         WindowStyle="None" ResizeMode="CanResizeWithGrip"
         Background="White" FontFamily="Segoe UI"
-        WindowStartupLocation="CenterOwner">
+        WindowStartupLocation="CenterOwner"
+        AllowDrop="True" DragOver="ComposeWindow_DragOver" Drop="ComposeWindow_Drop">
 
     <shell:WindowChrome.WindowChrome>
-        <shell:WindowChrome CaptionHeight="38" ResizeBorderThickness="6" GlassFrameThickness="0"/>
+        <shell:WindowChrome CaptionHeight="38" ResizeBorderThickness="6" GlassFrameThickness="0" CornerRadius="8"/>
     </shell:WindowChrome.WindowChrome>
 
     <Window.Resources>
-        <SolidColorBrush x:Key="AccentBrush" Color="#FF6D28D9"/>
+        <!-- AccentBrush/AccentDeepBrush used to be redefined here locally, duplicating
+             Theme.xaml's ThemeAccent/ThemeAccentDeep (identical colours) — now just references
+             the shared ones directly, so the two can't drift apart. -->
 
         <Style x:Key="FieldBox" TargetType="TextBox">
             <Setter Property="BorderThickness" Value="0"/>
-            <Setter Property="Padding" Value="0,9"/>
+            <!-- Left padding — without it the input area starts flush against the label column
+                 with no visible gap, so it's unclear where the label ends and typed text begins. -->
+            <Setter Property="Padding" Value="10,0,0,0"/>
             <Setter Property="FontSize" Value="13.5"/>
             <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <!-- Padding alone doesn't reliably centre a TextBox's own text — its default
+                 VerticalContentAlignment is Top, so a focused box (with its caret needing full
+                 font-ascent/descent room) and an unfocused one can end up sized just differently
+                 enough that Padding-only centring visibly drifts row to row. This pins every row's
+                 text to the same centre regardless of focus state. -->
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
         </Style>
+        <!-- Apple Mail's convention: the label hugs the left edge and the input starts right after
+             it with a small fixed gap — no wide fixed-width label column (that left short labels
+             like "To" stranded with a large dead gap before the cursor, and right-aligning them
+             instead looked worse, floating disconnected mid-row). Each row's input simply starts
+             wherever its own label ends; To and Subject don't need to share one input-start column
+             to read cleanly — they don't in Apple Mail or most other clients either. -->
         <Style x:Key="FieldLabel" TargetType="TextBlock">
             <Setter Property="Foreground" Value="#FF9A9A9A"/>
             <Setter Property="FontSize" Value="13"/>
-            <Setter Property="Width" Value="60"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
         </Style>
+
+        <!-- Formatting toolbar button: square, flat, letter or glyph content -->
+        <Style x:Key="FormatButton" TargetType="Button">
+            <Setter Property="Width" Value="30"/>
+            <Setter Property="Height" Value="28"/>
+            <Setter Property="Margin" Value="0,0,2,0"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="#FF444444"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FontSize" Value="13.5"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Grid>
+                            <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="5"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}"/>
+                            <!-- Hover fades an overlay in/out rather than swapping Bd's own Background
+                                 outright — Bd stays free for a programmatic Background change (the
+                                 plain/rich toggle's active state, say) to keep showing through. -->
+                            <Border x:Name="HoverOverlay" Background="#FFEDE8F8" CornerRadius="5"
+                                    Opacity="0" IsHitTestVisible="False"/>
+                            <!-- Press feedback stays instant — a click should feel immediate, not eased. -->
+                            <Border x:Name="PressOverlay" Background="#FFDDD3F3" CornerRadius="5"
+                                    Opacity="0" IsHitTestVisible="False"/>
+                            <!-- Drawn last (on top of both overlays) — otherwise a fully-opaque hover
+                                 overlay paints straight over the button's own text/icon, hiding it. -->
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                               Margin="{TemplateBinding Padding}"/>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Trigger.EnterActions>
+                                    <BeginStoryboard>
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="HoverOverlay" Storyboard.TargetProperty="Opacity"
+                                                              To="1" Duration="0:0:0.12"/>
+                                        </Storyboard>
+                                    </BeginStoryboard>
+                                </Trigger.EnterActions>
+                                <Trigger.ExitActions>
+                                    <BeginStoryboard>
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="HoverOverlay" Storyboard.TargetProperty="Opacity"
+                                                              To="0" Duration="0:0:0.12"/>
+                                        </Storyboard>
+                                    </BeginStoryboard>
+                                </Trigger.ExitActions>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="PressOverlay" Property="Opacity" Value="1"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Word-labelled actions need to read as discrete buttons; without their own outline
+             "•" and "1." sitting side by side run together into one string. Also used for the
+             couple of controls that show a short symbol rather than an icon-font glyph. -->
+        <Style x:Key="TextActionButton" TargetType="Button" BasedOn="{StaticResource FormatButton}">
+            <Setter Property="Width" Value="Auto"/>
+            <Setter Property="MinWidth" Value="30"/>
+            <Setter Property="Padding" Value="10,0"/>
+            <Setter Property="Margin" Value="0,0,5,0"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Background" Value="White"/>
+            <Setter Property="BorderBrush" Value="#FFE4E0EE"/>
+            <Setter Property="BorderThickness" Value="1"/>
+        </Style>
+
+        <!-- Icon-only action button — Gmail/Apple Mail/Thunderbird all use icon, not word, buttons
+             for compose-toolbar actions; the outline keeps each one legible as its own control. -->
+        <Style x:Key="IconActionButton" TargetType="Button" BasedOn="{StaticResource TextActionButton}">
+            <Setter Property="Width" Value="30"/>
+            <Setter Property="MinWidth" Value="30"/>
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="FontFamily" Value="Segoe Fluent Icons, Segoe MDL2 Assets"/>
+            <Setter Property="FontSize" Value="13"/>
+        </Style>
+
+        <Style x:Key="ToolbarSeparator" TargetType="Border">
+            <Setter Property="Width" Value="1"/>
+            <Setter Property="Height" Value="18"/>
+            <Setter Property="Background" Value="#FFE4E4E8"/>
+            <Setter Property="Margin" Value="5,0,7,0"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+
+        <Style x:Key="PillButton" TargetType="Button">
+            <Setter Property="Padding" Value="16,8"/>
+            <Setter Property="Margin" Value="0,0,8,0"/>
+            <Setter Property="Background" Value="#FFF3F3F5"/>
+            <Setter Property="Foreground" Value="#FF555555"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FontSize" Value="12.5"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="7"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Opacity" Value="0.85"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Minimize/Maximize: neutral gray hover. Close gets its own style below (red hover) —
+             these must not share one style, or minimize/maximize wrongly turn red on hover too. -->
         <Style x:Key="WindowGlyphButton" TargetType="Button">
             <Setter Property="Width" Value="38"/>
             <Setter Property="Height" Value="38"/>
             <Setter Property="Background" Value="Transparent"/>
-            <Setter Property="Foreground" Value="#FF666666"/>
+            <Setter Property="Foreground" Value="#FF3C3C3C"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="FontFamily" Value="Segoe Fluent Icons, Segoe MDL2 Assets"/>
-            <Setter Property="FontSize" Value="10"/>
+            <Setter Property="FontSize" Value="12"/>
             <Setter Property="shell:WindowChrome.IsHitTestVisibleInChrome" Value="True"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#FFEDEDED"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <!-- Not just WindowGlyphButton + a Style.Trigger — that trigger loses to WindowGlyphButton's
+             own ControlTemplate.Trigger (a template-level Setter beats a Style-level one targeting
+             the same templated Background), so hovering Close showed the shared neutral-gray hover
+             with dark text instead of red-with-white-text. This gets its own template instead. -->
+        <Style x:Key="CloseGlyphButton" TargetType="Button" BasedOn="{StaticResource WindowGlyphButton}">
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
@@ -53,11 +209,17 @@
         </Style>
     </Window.Resources>
 
-    <Border BorderBrush="#FFE2E2E2" BorderThickness="1">
-        <Grid>
+    <!-- A visibly darker edge than a plain white-on-white 1px line — this window floats over the
+         main window and (with WindowChrome + WindowStyle="None") gets no OS drop shadow to lean
+         on for separation, so the border itself has to do that job. -->
+    <Border BorderBrush="#FFB6B6C0" BorderThickness="1" CornerRadius="8">
+        <Grid Background="#FFF6F5F9">
             <Grid.RowDefinitions>
                 <RowDefinition Height="38"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
                 <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
 
@@ -66,92 +228,418 @@
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
-                <TextBlock Text="New message" Margin="16,0,0,0" VerticalAlignment="Center"
+                <TextBlock x:Name="HeaderText" Text="New message" Margin="16,0,0,0" VerticalAlignment="Center"
                            Foreground="#FF555555" FontSize="12.5" FontWeight="SemiBold"/>
-                <Button Grid.Column="1" Content="&#xE8BB;" Style="{StaticResource WindowGlyphButton}" Click="CancelButton_Click"/>
+                <!-- Multiple compose windows can be open at once — minimize gets one out of the
+                     way without discarding it, and maximize gives a full-window editing view. -->
+                <Button Grid.Column="1" Content="&#xE921;" Style="{StaticResource WindowGlyphButton}"
+                        AutomationProperties.Name="Minimize" Click="MinimizeButton_Click"/>
+                <Button Grid.Column="2" x:Name="MaximizeButton" Content="&#xE922;" Style="{StaticResource WindowGlyphButton}"
+                        AutomationProperties.Name="Maximize" Click="MaximizeButton_Click"/>
+                <Button Grid.Column="3" Content="&#xE8BB;" Style="{StaticResource CloseGlyphButton}"
+                        AutomationProperties.Name="Close" Click="CancelButton_Click"/>
             </Grid>
             <Border Grid.Row="0" VerticalAlignment="Bottom" Height="1" Background="#FFF0F0F0"/>
 
-            <!-- Fields -->
-            <StackPanel Grid.Row="1" Margin="24,16,24,0">
-                <Grid Margin="0,0,0,2">
+            <!-- Recipient / subject fields — a distinct white card like the toolbar/body below it,
+                 instead of sitting directly on the page background with nothing framing it. -->
+            <!-- Padding comfortably exceeds the corner radius (8) — text sitting right at a rounded
+                 corner's curve looks clipped/cramped; the field text needs enough inset that it
+                 only ever meets a straight edge. -->
+            <Border Grid.Row="1" Margin="20,10,20,0" Background="White" CornerRadius="8"
+                    BorderBrush="#FFE7E6EE" BorderThickness="1" Padding="14,4">
+            <StackPanel>
+                <Grid Height="40">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
                     <TextBlock Text="To" Style="{StaticResource FieldLabel}"/>
-                    <TextBox x:Name="ToBox" Grid.Column="1" Style="{StaticResource FieldBox}"/>
-                    <TextBlock x:Name="CcBccToggle" Grid.Column="2" Text="Cc/Bcc" Foreground="#FF9A9A9A" FontSize="12"
-                               VerticalAlignment="Center" Cursor="Hand" MouseLeftButtonUp="CcBccToggle_Click"/>
+                    <TextBox x:Name="ToBox" Grid.Column="1" Style="{StaticResource FieldBox}"
+                             AutomationProperties.Name="To"/>
+                    <!-- Independent Cc/Bcc toggles (Gmail's convention) rather than one link that
+                         reveals both — clicking "Cc" only brings Cc down; Bcc stays put until its
+                         own link is clicked. Each link disappears once its field is revealed, since
+                         there's no reason to hide it again mid-compose. -->
+                    <StackPanel Grid.Column="2" Orientation="Horizontal">
+                        <TextBlock x:Name="CcToggle" Text="Cc" Foreground="#FF9A9A9A" FontSize="12"
+                                   VerticalAlignment="Center" Cursor="Hand" MouseLeftButtonUp="CcToggle_Click"/>
+                        <TextBlock x:Name="ToggleSeparator" Text="/" Foreground="#FFD5D5D5" FontSize="12" Margin="4,0"
+                                   VerticalAlignment="Center"/>
+                        <TextBlock x:Name="BccToggle" Text="Bcc" Foreground="#FF9A9A9A" FontSize="12"
+                                   VerticalAlignment="Center" Cursor="Hand" MouseLeftButtonUp="BccToggle_Click"/>
+                    </StackPanel>
                 </Grid>
                 <Border Height="1" Background="#FFF0F0F0"/>
 
-                <StackPanel x:Name="CcBccPanel" Visibility="Collapsed">
-                    <Grid Margin="0,2">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="*"/>
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Text="Cc" Style="{StaticResource FieldLabel}"/>
-                        <TextBox x:Name="CcBox" Grid.Column="1" Style="{StaticResource FieldBox}"/>
-                    </Grid>
-                    <Border Height="1" Background="#FFF0F0F0"/>
+                <Grid x:Name="CcRow" Height="40" Visibility="Collapsed">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="Cc" Style="{StaticResource FieldLabel}"/>
+                    <TextBox x:Name="CcBox" Grid.Column="1" Style="{StaticResource FieldBox}"
+                             AutomationProperties.Name="Cc"/>
+                    <!-- Revealing Cc/Bcc needs a way back — without this, the only undo is manually
+                         clearing the text and living with an empty row taking up space forever. -->
+                    <TextBlock Grid.Column="2" Text="&#xE711;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                               FontSize="10" Foreground="#FFB5B5B5" VerticalAlignment="Center" Cursor="Hand"
+                               ToolTip="Remove Cc" MouseLeftButtonUp="HideCc_Click"
+                               AutomationProperties.Name="Remove Cc"/>
+                </Grid>
+                <Border x:Name="CcRowDivider" Height="1" Background="#FFF0F0F0" Visibility="Collapsed"/>
 
-                    <Grid Margin="0,2">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="*"/>
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Text="Bcc" Style="{StaticResource FieldLabel}"/>
-                        <TextBox x:Name="BccBox" Grid.Column="1" Style="{StaticResource FieldBox}"/>
-                    </Grid>
-                    <Border Height="1" Background="#FFF0F0F0"/>
-                </StackPanel>
+                <Grid x:Name="BccRow" Height="40" Visibility="Collapsed">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="Bcc" Style="{StaticResource FieldLabel}"/>
+                    <TextBox x:Name="BccBox" Grid.Column="1" Style="{StaticResource FieldBox}"
+                             AutomationProperties.Name="Bcc"/>
+                    <TextBlock Grid.Column="2" Text="&#xE711;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                               FontSize="10" Foreground="#FFB5B5B5" VerticalAlignment="Center" Cursor="Hand"
+                               ToolTip="Remove Bcc" MouseLeftButtonUp="HideBcc_Click"
+                               AutomationProperties.Name="Remove Bcc"/>
+                </Grid>
+                <Border x:Name="BccRowDivider" Height="1" Background="#FFF0F0F0" Visibility="Collapsed"/>
 
-                <Grid Margin="0,2">
+                <Grid Height="40">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="*"/>
                     </Grid.ColumnDefinitions>
                     <TextBlock Text="Subject" Style="{StaticResource FieldLabel}"/>
-                    <TextBox x:Name="SubjectBox" Grid.Column="1" Style="{StaticResource FieldBox}"/>
+                    <TextBox x:Name="SubjectBox" Grid.Column="1" Style="{StaticResource FieldBox}"
+                             AutomationProperties.Name="Subject"/>
                 </Grid>
-                <Border Height="1" Background="#FFF0F0F0"/>
-
-                <TextBox x:Name="BodyBox" Margin="0,14,0,0" BorderThickness="0" FontSize="13.5"
-                         AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"
-                         Height="280"/>
             </StackPanel>
+            </Border>
+
+            <!-- Formatting toolbar — a single flat WrapPanel. Nesting a second WrapPanel inside it
+                 (to collapse the "rich only" controls as one group when switching to plain text)
+                 looks reasonable but isn't: a WrapPanel child that itself wraps onto multiple
+                 internal rows still counts as ONE block to the outer WrapPanel, which always
+                 claims the full row width for that block — stranding whatever comes after it
+                 (the Plain/Rich toggle) alone on a mostly-empty final row instead of packing in
+                 wherever room is actually left. Flat structure + toggling each control's own
+                 Visibility (via the Tag="RichOnly" marker, read in SetPlainTextMode) avoids that;
+                 the toggle itself has no Tag, so it keeps flowing normally and stays reachable in
+                 both modes — or switching to plain text would be a one-way trip. -->
+            <Border Grid.Row="2" x:Name="FormatToolbar" Margin="20,8,20,0" Padding="4,4"
+                    Background="#FFFAF9FD" CornerRadius="8">
+              <StackPanel>
+                <WrapPanel x:Name="FormatWrap" Orientation="Horizontal">
+                    <Button Tag="RichOnly" Style="{StaticResource FormatButton}" Click="Bold_Click" ToolTip="Bold (Ctrl+B)"
+                            AutomationProperties.Name="Bold">
+                        <TextBlock Text="B" FontWeight="Bold" FontSize="14"/>
+                    </Button>
+                    <Button Tag="RichOnly" Style="{StaticResource FormatButton}" Click="Italic_Click" ToolTip="Italic (Ctrl+I)"
+                            AutomationProperties.Name="Italic">
+                        <TextBlock Text="I" FontStyle="Italic" FontSize="14" FontFamily="Georgia, serif"/>
+                    </Button>
+                    <Button Tag="RichOnly" Style="{StaticResource FormatButton}" Click="Underline_Click" ToolTip="Underline (Ctrl+U)"
+                            AutomationProperties.Name="Underline">
+                        <TextBlock Text="U" FontSize="14">
+                            <TextBlock.TextDecorations><TextDecoration Location="Underline"/></TextBlock.TextDecorations>
+                        </TextBlock>
+                    </Button>
+                    <Button Tag="RichOnly" Style="{StaticResource FormatButton}" Click="Strikethrough_Click" ToolTip="Strikethrough"
+                            AutomationProperties.Name="Strikethrough">
+                        <TextBlock Text="S" FontSize="14">
+                            <TextBlock.TextDecorations><TextDecoration Location="Strikethrough"/></TextBlock.TextDecorations>
+                        </TextBlock>
+                    </Button>
+
+                    <Border Tag="RichOnly" Style="{StaticResource ToolbarSeparator}"/>
+
+                    <!-- Alignment ranks above font/size/colour and list/indent/quote — reordered
+                         per feedback. Icon buttons rather than a text dropdown — a one-of-three
+                         choice you recognise by shape, the same way Gmail/Docs/Word show it. -->
+                    <Button Tag="RichOnly" Style="{StaticResource IconActionButton}" Click="AlignLeft_Click"
+                            ToolTip="Align left" AutomationProperties.Name="Align left" Content="&#xE8E4;"/>
+                    <Button Tag="RichOnly" Style="{StaticResource IconActionButton}" Click="AlignCenter_Click"
+                            ToolTip="Centre" AutomationProperties.Name="Centre" Content="&#xE8E3;"/>
+                    <Button Tag="RichOnly" Style="{StaticResource IconActionButton}" Click="AlignRight_Click"
+                            ToolTip="Align right" AutomationProperties.Name="Align right" Content="&#xE8E2;"/>
+
+                    <Border Tag="RichOnly" Style="{StaticResource ToolbarSeparator}"/>
+
+                    <ComboBox x:Name="FontCombo" Tag="RichOnly" Width="96" Height="26" VerticalAlignment="Center" FontSize="12"
+                              Margin="0,0,4,0" SelectedIndex="0" SelectionChanged="FontCombo_SelectionChanged"
+                              AutomationProperties.Name="Font">
+                        <ComboBoxItem Content="Segoe UI" Tag="Segoe UI, sans-serif"/>
+                        <ComboBoxItem Content="Arial" Tag="Arial, sans-serif"/>
+                        <ComboBoxItem Content="Calibri" Tag="Calibri, sans-serif"/>
+                        <ComboBoxItem Content="Georgia" Tag="Georgia, serif"/>
+                        <ComboBoxItem Content="Times New Roman" Tag="'Times New Roman', serif"/>
+                        <ComboBoxItem Content="Courier New" Tag="'Courier New', monospace"/>
+                        <ComboBoxItem Content="Verdana" Tag="Verdana, sans-serif"/>
+                    </ComboBox>
+
+                    <!-- Actual point sizes (the Google Docs/Word convention) rather than vague
+                         names like "Large"/"Huge" that don't say how big the text will be. -->
+                    <ComboBox x:Name="SizeCombo" Tag="RichOnly" Width="60" Height="26" VerticalAlignment="Center" FontSize="12"
+                              Margin="0,0,4,0" SelectedIndex="3" SelectionChanged="SizeCombo_SelectionChanged"
+                              AutomationProperties.Name="Font size">
+                        <ComboBoxItem Content="8"/>
+                        <ComboBoxItem Content="9"/>
+                        <ComboBoxItem Content="10"/>
+                        <ComboBoxItem Content="11"/>
+                        <ComboBoxItem Content="12"/>
+                        <ComboBoxItem Content="14"/>
+                        <ComboBoxItem Content="16"/>
+                        <ComboBoxItem Content="18"/>
+                        <ComboBoxItem Content="24"/>
+                        <ComboBoxItem Content="36"/>
+                    </ComboBox>
+
+                    <!-- Colour swatch pickers (Gmail/Apple Mail convention) rather than a dropdown
+                         of colour names — an "A" with its current colour as an underline, opening
+                         a grid of actual swatches instead of a list of words like "Purple"/"Blue".
+                         Text colour and highlight sit side by side, the same pairing Word/Docs use. -->
+                    <Button x:Name="ColourButton" Tag="RichOnly" Style="{StaticResource FormatButton}" Width="30"
+                            Click="ColourButton_Click" ToolTip="Text colour" AutomationProperties.Name="Text colour">
+                        <StackPanel>
+                            <TextBlock Text="A" FontFamily="Segoe UI" FontWeight="Bold" FontSize="13"
+                                       HorizontalAlignment="Center"/>
+                            <Border x:Name="ColourSwatch" Height="3" Width="16" Background="#FF1F1F1F"
+                                    CornerRadius="1" Margin="0,2,0,0"/>
+                        </StackPanel>
+                    </Button>
+                    <Button x:Name="HighlightButton" Tag="RichOnly" Style="{StaticResource FormatButton}" Width="30"
+                            Click="HighlightButton_Click" ToolTip="Highlight colour" AutomationProperties.Name="Highlight colour">
+                        <StackPanel>
+                            <TextBlock Text="&#xE7E6;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="13"
+                                       HorizontalAlignment="Center"/>
+                            <Border x:Name="HighlightSwatch" Height="3" Width="16" Background="#FFFFF176"
+                                    CornerRadius="1" Margin="0,2,0,0"/>
+                        </StackPanel>
+                    </Button>
+
+                    <Border Tag="RichOnly" Style="{StaticResource ToolbarSeparator}"/>
+
+                    <Button Tag="RichOnly" Style="{StaticResource IconActionButton}" Click="BulletList_Click"
+                            ToolTip="Bulleted list" AutomationProperties.Name="Bulleted list" Content="&#xE8FD;"/>
+                    <Button Tag="RichOnly" Style="{StaticResource TextActionButton}" Click="NumberedList_Click"
+                            ToolTip="Numbered list" AutomationProperties.Name="Numbered list" Content="1."
+                            FontWeight="SemiBold"/>
+
+                    <Border Tag="RichOnly" Style="{StaticResource ToolbarSeparator}"/>
+
+                    <Button Tag="RichOnly" Style="{StaticResource IconActionButton}" Click="Link_Click"
+                            ToolTip="Insert link" AutomationProperties.Name="Insert link" Content="&#xE71B;"/>
+                    <!-- Moved up from the bottom action bar to sit with Link — both are ways of
+                         bringing in something from outside the message, the same grouping Apple
+                         Mail uses (Address/Attach/Photo together in one row). -->
+                    <Button Style="{StaticResource IconActionButton}" Click="AttachButton_Click"
+                            ToolTip="Attach files" AutomationProperties.Name="Attach files" Content="&#xE723;"/>
+
+                    <Border Tag="RichOnly" Style="{StaticResource ToolbarSeparator}"/>
+
+                    <!-- Apple Mail lets you deal with your signature right where you're writing
+                         (a picker inline in the compose header) instead of only from a settings
+                         screen elsewhere — picking a name inserts it at the cursor and the combo
+                         resets to the "Signature" placeholder, the same one-shot-action pattern as
+                         an "Insert" dropdown. Editing signatures themselves is still done from the
+                         pencil icon on the main window toolbar, not duplicated here. Works in
+                         plain-text mode too (SignatureCombo_SelectionChanged falls back to plain
+                         text there), so no Tag. -->
+                    <ComboBox x:Name="SignatureCombo" Width="100" Height="26" VerticalAlignment="Center" FontSize="12"
+                              Margin="0,0,4,0" SelectedIndex="0" DropDownOpened="SignatureCombo_DropDownOpened"
+                              SelectionChanged="SignatureCombo_SelectionChanged"
+                              AutomationProperties.Name="Insert signature">
+                        <ComboBoxItem Content="Signature" IsEnabled="False"/>
+                    </ComboBox>
+
+                    <Border Tag="RichOnly" Style="{StaticResource ToolbarSeparator}"/>
+
+                    <!-- Everything used often enough to earn a permanent spot is above; the rest
+                         (indent/outdent, block quote, inline image, clear formatting, paste
+                         plain, emoji, plus the plain/rich toggle) expands into a second row below
+                         instead of crowding this one — the same "more options" row Roundcube's
+                         compose toolbar uses, rather than a dropdown menu. No Tag — stays visible
+                         in plain-text mode too, since it's the only way back to rich text once
+                         switched. -->
+                    <Button x:Name="MoreButton" Style="{StaticResource TextActionButton}"
+                            Click="MoreButton_Click" ToolTip="More formatting options"
+                            AutomationProperties.Name="More formatting options" Content="…" FontWeight="Bold"/>
+                </WrapPanel>
+
+                <!-- Second row, collapsed until MoreButton expands it. Icon glyphs verified via a
+                     disposable test harness before use (Segoe Fluent Icons has no dedicated
+                     indent/outdent glyphs, so chevrons stand in for direction — the same convention
+                     Google Docs' indent icons use). Quote uses a real quotation-mark character
+                     rather than an icon-font glyph, since none of the candidates read as "quote". -->
+                <WrapPanel x:Name="OverflowWrap" Orientation="Horizontal" Visibility="Collapsed" Margin="0,4,0,0">
+                    <Button x:Name="IndentButton" Tag="RichOnly" Style="{StaticResource IconActionButton}" Click="Indent_Click"
+                            ToolTip="Increase indent" AutomationProperties.Name="Increase indent" Content="&#xE76C;"/>
+                    <Button x:Name="OutdentButton" Tag="RichOnly" Style="{StaticResource IconActionButton}" Click="Outdent_Click"
+                            ToolTip="Decrease indent" AutomationProperties.Name="Decrease indent" Content="&#xE76B;"/>
+                    <Button Tag="RichOnly" Style="{StaticResource FormatButton}" Click="Quote_Click"
+                            ToolTip="Block quote" AutomationProperties.Name="Block quote">
+                        <TextBlock Text="&#x275D;" FontFamily="Segoe UI" FontSize="16"/>
+                    </Button>
+
+                    <Border Tag="RichOnly" Style="{StaticResource ToolbarSeparator}"/>
+
+                    <Button Tag="RichOnly" Style="{StaticResource IconActionButton}" Click="InsertImageButton_Click"
+                            ToolTip="Insert image inline" AutomationProperties.Name="Insert image inline" Content="&#xE8B9;"/>
+                    <Button Tag="RichOnly" Style="{StaticResource IconActionButton}" Click="ClearFormatting_Click"
+                            ToolTip="Remove formatting" AutomationProperties.Name="Remove formatting" Content="&#xE7A7;"/>
+
+                    <Border Tag="RichOnly" Style="{StaticResource ToolbarSeparator}"/>
+
+                    <Button Tag="RichOnly" Style="{StaticResource IconActionButton}" Click="PastePlainButton_Click"
+                            ToolTip="Paste without formatting (Ctrl+Shift+V)"
+                            AutomationProperties.Name="Paste without formatting" Content="&#xE77F;"/>
+                    <Button Tag="RichOnly" Style="{StaticResource FormatButton}" Click="EmojiButton_Click"
+                            ToolTip="Insert emoji" AutomationProperties.Name="Insert emoji">
+                        <TextBlock Text="&#x1F642;" FontFamily="Segoe UI Emoji" FontSize="15"/>
+                    </Button>
+
+                    <Border Style="{StaticResource ToolbarSeparator}"/>
+
+                    <!-- No Tag, same reasoning as MoreButton — this is the only way back to rich
+                         text once switched, so it must stay visible in plain-text mode too. -->
+                    <Button x:Name="PlainRichToggleButton" Style="{StaticResource IconActionButton}"
+                            Click="TogglePlainText_Click" ToolTip="Switch to plain text"
+                            AutomationProperties.Name="Toggle plain text" Content="&#xE8E9;" FontSize="15"/>
+                </WrapPanel>
+              </StackPanel>
+            </Border>
+
+            <!-- Body: rich editor, or a plain TextBox when plain-text mode is on -->
+            <Grid Grid.Row="3" Margin="20,8,20,0">
+                <Border BorderBrush="#FFEDEDF2" BorderThickness="1" CornerRadius="8" ClipToBounds="True">
+                    <Grid>
+                        <!-- The editor must not swallow file drops; the window handles them as
+                             attachments rather than letting WebView2 navigate to the file. -->
+                        <wv2:WebView2 x:Name="RichEditor" AllowExternalDrop="False"/>
+                        <TextBox x:Name="PlainEditor" Visibility="Collapsed" BorderThickness="0" FontSize="13.5"
+                                 Padding="12" AcceptsReturn="True" TextWrapping="Wrap"
+                                 VerticalScrollBarVisibility="Auto" SpellCheck.IsEnabled="True"
+                                 AutomationProperties.Name="Message body"/>
+                    </Grid>
+                </Border>
+
+                <!-- Slides in when inserting a link, instead of a modal prompt -->
+                <Border x:Name="LinkBar" Visibility="Collapsed" VerticalAlignment="Top" Margin="12"
+                        Background="White" CornerRadius="8" Padding="10,8" BorderBrush="#FFE2DDF0" BorderThickness="1">
+                    <Border.Effect>
+                        <DropShadowEffect Color="#FF000000" Opacity="0.12" BlurRadius="14" ShadowDepth="2"/>
+                    </Border.Effect>
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="Link to" VerticalAlignment="Center" FontSize="12.5" Foreground="#FF777777"
+                                   Margin="0,0,10,0"/>
+                        <TextBox x:Name="LinkBox" Width="300" FontSize="12.5" Padding="6,4" VerticalAlignment="Center"
+                                 AutomationProperties.Name="Link address"/>
+                        <Button Style="{StaticResource TextActionButton}" Margin="8,0,0,0" Content="Insert"
+                                AutomationProperties.Name="Insert link address" Click="InsertLink_Click"/>
+                        <Button Style="{StaticResource TextActionButton}" Content="Cancel" Click="CancelLink_Click"/>
+                    </StackPanel>
+                </Border>
+            </Grid>
+
+            <!-- Attachment chips -->
+            <ItemsControl Grid.Row="4" x:Name="AttachmentList" Margin="20,10,20,0" Visibility="Collapsed">
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <Border Background="#FFF4F4F6" CornerRadius="7" Padding="10,6" Margin="0,0,8,8">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xE723;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                                           FontSize="12" Foreground="#FF777777" VerticalAlignment="Center" Margin="0,0,7,0"/>
+                                <TextBlock Text="{Binding Name}" FontSize="12" VerticalAlignment="Center"/>
+                                <TextBlock Text="{Binding Size}" FontSize="11" Foreground="#FFAAAAAA"
+                                           VerticalAlignment="Center" Margin="7,0,0,0"/>
+                                <Button Content="&#xE711;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                                        FontSize="10" Margin="8,0,0,0" Width="18" Height="18" Cursor="Hand"
+                                        Background="Transparent" BorderThickness="0" Foreground="#FF999999"
+                                        Tag="{Binding Path}" Click="RemoveAttachment_Click"
+                                        ToolTip="Remove attachment"
+                                        AutomationProperties.Name="Remove attachment">
+                                    <Button.Template>
+                                        <ControlTemplate TargetType="Button">
+                                            <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="9">
+                                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                            </Border>
+                                            <ControlTemplate.Triggers>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter TargetName="Bd" Property="Background" Value="#FFE0DAF0"/>
+                                                </Trigger>
+                                            </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                    </Button.Template>
+                                </Button>
+                            </StackPanel>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
 
             <!-- Actions -->
-            <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="24,12,24,20">
-                <Button Content="Cancel" Padding="16,8" Margin="0,0,8,0" Background="#FFF3F3F3"
-                        Foreground="#FF555555" BorderThickness="0" Cursor="Hand" Click="CancelButton_Click">
-                    <Button.Template>
-                        <ControlTemplate TargetType="Button">
-                            <Border Background="{TemplateBinding Background}" CornerRadius="7" Padding="{TemplateBinding Padding}">
-                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                            </Border>
-                        </ControlTemplate>
-                    </Button.Template>
-                </Button>
-                <Button x:Name="SendButton" Padding="18,8" Background="{StaticResource AccentBrush}"
-                        Foreground="White" BorderThickness="0" Cursor="Hand" Click="SendButton_Click">
-                    <Button.Template>
-                        <ControlTemplate TargetType="Button">
-                            <Border Background="{TemplateBinding Background}" CornerRadius="7" Padding="{TemplateBinding Padding}">
-                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                            </Border>
-                        </ControlTemplate>
-                    </Button.Template>
-                    <StackPanel Orientation="Horizontal">
-                        <TextBlock Text="Send" VerticalAlignment="Center"/>
-                        <TextBlock Text="&#xE724;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="12" Margin="8,0,0,0" VerticalAlignment="Center"/>
-                    </StackPanel>
-                </Button>
-            </StackPanel>
+            <Grid Grid.Row="5" Margin="24,12,24,18">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="0" Orientation="Horizontal">
+                    <!-- Apple Mail's "Address" button — a browsable picker of everyone you've
+                         corresponded with, not just the inline type-ahead the To/Cc/Bcc fields
+                         already do on their own. -->
+                    <Button x:Name="ContactsButton" Style="{StaticResource PillButton}" Click="ContactsButton_Click"
+                            Padding="12,8" ToolTip="Contacts" AutomationProperties.Name="Contacts"
+                            FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="14" Content="&#xE77B;"/>
+                    <!-- Attach moved up to the formatting toolbar, next to Link. -->
+                    <Button Style="{StaticResource PillButton}" Click="DiscardButton_Click" Padding="12,8"
+                            ToolTip="Discard" AutomationProperties.Name="Discard"
+                            FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="14" Content="&#xE74D;"/>
+                </StackPanel>
+
+                <StackPanel Grid.Column="2" Orientation="Horizontal">
+                    <Button Style="{StaticResource PillButton}" Click="SaveDraftButton_Click"
+                            AutomationProperties.Name="Save draft">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="&#xE74E;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                                       FontSize="12" VerticalAlignment="Center" Margin="0,0,7,0"/>
+                            <TextBlock Text="Save draft" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
+                    <Button x:Name="SendButton" Padding="20,8" Background="{StaticResource ThemeAccent}"
+                            Foreground="White" BorderThickness="0" Cursor="Hand" Click="SendButton_Click"
+                            AutomationProperties.Name="Send">
+                        <Button.Template>
+                            <ControlTemplate TargetType="Button">
+                                <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="7"
+                                        Padding="{TemplateBinding Padding}">
+                                    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
+                                <ControlTemplate.Triggers>
+                                    <Trigger Property="IsMouseOver" Value="True">
+                                        <Setter TargetName="Bd" Property="Opacity" Value="0.88"/>
+                                    </Trigger>
+                                </ControlTemplate.Triggers>
+                            </ControlTemplate>
+                        </Button.Template>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="Send" VerticalAlignment="Center" FontSize="13"/>
+                            <TextBlock Text="&#xE724;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                                       FontSize="12" Margin="8,0,0,0" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
+                </StackPanel>
+            </Grid>
         </Grid>
     </Border>
 </Window>

@@ -1,78 +1,98 @@
-# IITB Webmail — Custom Frontend, Automated Backend
+# IITB Webmail — Custom IMAP/SMTP Client
 
 ## Context
-The user wants a custom, clean, minimalistic UI they build, that acts as a **literal middleman** in front of the real `webmail.iitb.ac.in` (Roundcube). Not a browser-in-a-box showing Roundcube's own UI, and not a new email client talking IMAP/SMTP or an API. The real webmail page keeps running in the background (hidden), and every action in the custom UI **automates the real page**: clicking a mail in the custom UI clicks the actual row in the hidden webmail DOM and pulls back what it renders; clicking Send in the custom UI drives the real compose form and clicks the real Send button. The custom UI is a puppet controller; webmail.iitb.ac.in is the puppet doing the actual work. This is a greenfield project (empty directory); `.NET 9 SDK` is already installed, so no extra toolchain is needed.
+The app is a custom, clean, minimalistic desktop email client for the user's IITB mailbox.
+
+**This supersedes the original plan.** The app began as a literal middleman puppeting the real
+`webmail.iitb.ac.in` (Roundcube) page inside a hidden WebView2 — see git history for that
+version if it's ever needed for reference. It was rebuilt to talk directly to IITB's mail servers
+over IMAP and SMTP once it was confirmed the account works from arbitrary networks in Thunderbird,
+Betterbird and Gmail's "Send mail as", and that `imap.iitb.ac.in:993` answers with a real IMAP
+banner from outside the campus network. That made the webmail-automation approach the wrong
+choice: it required a permanently-running Chromium instance just to puppet Roundcube's own UI,
+depended on scraping fragile DOM selectors that were never verified end-to-end, and re-broke on
+every Roundcube update — all to reach a server that was reachable directly the whole time.
+
+**One real trade-off from the switch, and it's already priced in.** IITB's institute-wide
+"suggest anyone at IITB" autocomplete in Roundcube compose comes from an internal LDAP directory,
+reachable only from inside the campus network — Roundcube can query it because it runs there;
+this client, running on the user's own machine, cannot. What it has instead: recipient
+autocomplete built from the user's own Sent/Inbox history (see `Mail/ContactsIndex.cs`), which
+the user confirmed is an acceptable substitute. An LDAP directory setting could be added later if
+institute-wide lookup becomes reachable (on campus, or over VPN).
 
 ## Architecture
-One process, two layers:
+One process:
 
-1. **Hidden automation host (WebView2)** — loads the real `https://webmail.iitb.ac.in/` and keeps it loaded and running for the app's entire lifetime. Shown once for the user to complete real login (IITB SSO/CAS can't be faked). After login, the WebView2 window is hidden/moved off-screen but the page keeps running live in memory — it's the actual webmail session, just not visually shown.
-2. **DOM automation bridge** — JS injected into that hidden page via `CoreWebView2.ExecuteScriptAsync`, exposing operations like `listInbox()`, `openMessage(id)`, `startCompose()`, `fillCompose(to, subject, body)`, `clickSend()`, `markRead(id)`, `delete(id)`. Each of these finds real DOM elements in the live webmail page and either scrapes their content or dispatches real click/input events on them — i.e. actually interacting with Roundcube's own UI programmatically, not calling an API.
-3. **Custom UI (WPF)** — the only thing the user sees: folder list, message list, reading pane, compose window, styled cleanly and minimally. Every user action calls into the bridge; every bridge result re-renders into the custom UI.
-4. **Live change detection** — a `MutationObserver` injected into the hidden page's message-list container fires whenever webmail's own UI updates (new mail arrives, a send completes, etc.), and posts that event back to the WPF host via `chrome.webview.postMessage`, which refreshes the custom UI and raises a native desktop toast for new mail. This mirrors the real webmail live instead of polling on a timer.
+1. **`Mail/ImapMailBackend.cs`** — owns one long-lived `MailKit.Net.Imap.ImapClient` connection
+   for the app's lifetime (reading, flags, move/delete/archive, drafts) and opens a short-lived
+   `MailKit.Net.Smtp.SmtpClient` connection per send. Method names deliberately mirror the old
+   wrapper-era `DomBridge`'s surface (`ListFoldersAsync`, `SetFlaggedAsync`, `OpenMessageAsync`,
+   ...) so the rest of the app changed as little as possible in the migration — only what
+   answers those calls did.
+2. **`Mail/AccountSettings.cs`** — IMAP/SMTP host, port and credentials, persisted encrypted via
+   Windows DPAPI (`CurrentUser` scope) under `%LOCALAPPDATA%\IITBWebmailWrapper\account.dat`.
+   Never plaintext, never in the repo.
+3. **`Mail/LoginWindow.xaml`** — collects credentials, connects before closing, hands the caller
+   back a live, authenticated backend or nothing.
+4. **`Mail/ContactsIndex.cs`** — recipient autocomplete built by scanning Sent/Inbox envelope
+   headers after connecting, ranked by correspondence frequency.
+5. **Custom UI (WPF, unchanged in spirit)** — `MainWindow`: folder list, message list, reading
+   pane, compose. `UseMockData` is now `_mail is null`: the app always starts on sample data
+   (`Automation/MockData.cs`) and switches to the live backend once signed in, so UI work never
+   needs a live login.
 
 ## Why WPF (not WinForms)
-WPF gives real control over styling (custom fonts, spacing, flat panels, accent colors) with no extra toolchain beyond the already-installed .NET 9 SDK — the better fit for a UI meant to look deliberately minimal, versus WinForms' dated control set.
+WPF gives real control over styling (custom fonts, spacing, flat panels, accent colors) with no
+extra toolchain beyond the .NET 9 SDK — the better fit for a UI meant to look deliberately
+minimal, versus WinForms' dated control set. (`UseWindowsForms` stays enabled in the `.csproj`
+only for `NotifyIcon`/tray support, which WPF has no native equivalent for.)
 
 ## Project layout
 ```
 Email Client/
   EmailClient.sln
-  src/
-    EmailClient.csproj
+  src/EmailClient/
     App.xaml / App.xaml.cs          # entry point
+    Mail/
+      AccountSettings.cs             # credentials + server settings, DPAPI-encrypted at rest
+      ImapMailBackend.cs             # IMAP (MailKit) for everything read-side + move/flag/delete;
+                                      # SMTP (MailKit) for sending
+      ContactsIndex.cs               # recipient autocomplete from mail history
+      LoginWindow.xaml(.cs)          # sign-in dialog
     Automation/
-      AutomationHost.cs              # hidden WebView2: loads webmail.iitb.ac.in, shows itself only for login, hides after
-      DomBridge.cs                   # C# wrappers calling ExecuteScriptAsync for each puppet action
-      scripts/                       # the actual injected JS: list.js, openMessage.js, compose.js, send.js, observer.js
+      MailModels.cs                  # InboxRow / MessageDetail / MailFolder / MessagePage —
+                                      # shared shapes used by both the mock and live backends
+      MailText.cs                    # HTML<->plain-text, snippets, quoting, date formatting
+      MockData.cs / SampleAttachments.cs   # sample data + real generated sample files
     UI/
-      MainWindow.xaml                # 3-pane shell: folder sidebar / message list / reading pane
-      ComposeWindow.xaml
+      MainWindow.xaml(.cs)            # 3-pane shell: folder sidebar / message list / reading pane
+      ComposeWindow.xaml(.cs)         # rich-text (WebView2 contenteditable) compose
+      AttachmentViewerWindow.xaml(.cs)  # in-app attachment preview (PDF/image/text)
       TrayIcon.cs                     # NotifyIcon: minimize-to-tray, quit
     Settings/
       AppSettings.cs                  # window bounds, persisted to %LOCALAPPDATA%
   icon.ico
 ```
 
-## Implementation phases
-
-### Phase A — Automation host
-- `AutomationHost` owns a `CoreWebView2` with an explicit persistent User Data Folder (`%LOCALAPPDATA%\IITBWebmailWrapper\WebView2`) so the login session survives restarts.
-- On first run (or whenever the session has expired), **show** this WebView2 in a plain window so the user completes the real IITB login/SSO flow. Once the URL indicates a logged-in inbox, hide/move the window off-screen — the page itself is *not* torn down, it keeps running as a live, real webmail session in the background.
-- If a later automation call detects the page has been bounced back to a login screen (session expired), re-show the window for re-login.
-
-### Phase B — DOM automation bridge
-This is the core of the "middleman" behavior, and the part with real unknowns until tested live against `webmail.iitb.ac.in`:
-- `listInbox()`: injected JS queries the message-list container in the live page, scrapes each row's sender/subject/snippet/date/unread state/internal row id, returns as JSON to C#.
-- `openMessage(id)`: dispatches a real click event on the corresponding row element (so Roundcube's own UI actually opens it, exactly as if the user clicked it), waits for the reading pane to render, then scrapes subject/from/date/body HTML back out.
-- `startCompose()` / `fillCompose(to, subject, body)` / `clickSend()`: clicks the real Compose button, waits for the compose form to appear, sets the to/subject/body fields (setting `.value` and dispatching `input`/`change` events so Roundcube's own JS framework picks up the change, since a raw property assignment alone often won't trigger framework-bound state), then dispatches a real click on the actual Send button.
-- `markRead(id)` / `delete(id)`: same pattern — locate the real UI control (context-menu item or toolbar button) and click it for real, rather than calling any backend endpoint directly.
-- **Confirmed: webmail.iitb.ac.in runs Roundcube.** This is a much more knowable target than a generic guess — Roundcube's DOM has used stable conventions for years (message rows as `tr[id^="rcmrow"]`, toolbar buttons `#button-compose`/`#button-send`, the preview iframe `#messagecontframe`), which `DomBridge.cs` now targets directly instead of blind heuristics. Skin customizations or version differences can still shift exact class names inside a row/preview, so the selectors are still worth confirming live via the app's "Inspect webmail (DevTools)" button before relying on them.
-- `observer.js`: a `MutationObserver` on the message-list container, posting `{type: "newMail", ...}` back via `chrome.webview.postMessage` whenever Roundcube's own UI inserts a new row — this is what drives live refresh and notifications, sourced directly from the real UI changing rather than a polling timer.
-
-### Phase C — Custom minimal UI (WPF)
-- `MainWindow`: three-pane layout (folders / message list / reading pane) populated purely from `DomBridge` scrape results.
-- `ComposeWindow`: to/cc/subject/body fields + Send button, calling `DomBridge.FillCompose` + `DomBridge.ClickSend` on submit.
-- Minimalistic visual language: flat panels, generous whitespace, one accent color, system font — deliberately not mimicking Roundcube's own UI.
-- Reading pane renders message HTML in a small scoped WebView2 (sandboxed to just that pane) so email HTML/images display safely without exposing the rest of the app to that content.
-
-### Phase D — Packaging & previously-agreed features
-- Custom icon (`icon.ico`) + window title.
-- System tray via `NotifyIcon`: minimize-to-tray on close (X), true quit only via tray "Exit".
-- Window size/position persisted to `%LOCALAPPDATA%\IITBWebmailWrapper\settings.json`, restored on launch.
-- Desktop notifications: native Windows toast triggered directly by the `observer.js` MutationObserver event (Phase B), not a separate polling loop — reflects the real webmail UI changing live.
-- Publish as a single self-contained exe: `dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true`.
-
 ## Verification
 - `dotnet build` compiles cleanly.
-- Live run: complete real IITB login once in the shown automation-host window; confirm it hides itself and `listInbox()` populates the custom UI's message list from the live page.
-- Click a message in the custom UI; confirm the hidden page actually navigates to that message (observable by briefly un-hiding the automation window during testing) and the reading pane shows the real scraped content.
-- Compose and send a real test message through the custom `ComposeWindow`; confirm it actually sends by checking Sent folder / recipient inbox in a real browser afterward.
-- Mark-read/delete from the custom UI; confirm the change reflects in webmail.iitb.ac.in when checked in a real browser (proves the click really landed on Roundcube's own controls, not just local state).
-- Restart the app without clearing the WebView2 profile — confirm it skips the login screen.
-- Resize/move, close via X (tray-minimizes, doesn't quit), reopen from tray, quit via tray "Exit", relaunch — confirm window bounds restored.
-- With the app running, receive a genuinely new email — confirm the `MutationObserver` fires and a native toast appears without any manual refresh.
-- `dotnet publish` per the command above; run the resulting single exe outside the dev environment.
+- Live run: `dotnet run`, click "Sign in", enter IITB credentials. On success the sidebar shows
+  the account's real folders and Inbox loads.
+- Open a message, reply/reply-all/forward, send — confirm it lands in Sent and in the recipient's
+  inbox.
+- Star/mark-read/delete/archive/move — confirm the change is visible in Thunderbird/Betterbird
+  afterward (proves it landed on the real IMAP mailbox, not just local state).
+- Save a draft, reopen it, confirm formatting survived.
+- Attach a file, send, confirm the recipient receives it.
+- Restart the app — confirm it reconnects without re-prompting for credentials.
 
-## Known open risk
-Exact DOM structure/selectors of the live Roundcube client can only be determined by inspecting the real, authenticated `webmail.iitb.ac.in` page — not guessable in advance. Phase B's first implementation pass will need one or more live-testing iterations (with DevTools open against the real site) to nail down working selectors/event-dispatch details, and this automation approach is inherently more fragile than an API-based integration: if IITB updates Roundcube's web UI, the injected JS selectors may need updating.
+## Known open items
+- **SMTP submission host/port/security are best-guess defaults** (`smtp-auth.iitb.ac.in:587`,
+  STARTTLS) pending confirmation against the user's known-working Thunderbird/Betterbird SMTP
+  settings. Editable in the sign-in dialog's "Server settings" section without a rebuild.
+- **Live refresh is polling (60s), not IMAP IDLE.** Simpler for a first pass; an IDLE-based
+  connection would push new-mail notifications instantly instead.
+- **No LDAP directory lookup.** See the trade-off note above — `ContactsIndex` covers people the
+  user has actually corresponded with; add an LDAP settings slot later if institute-wide lookup
+  becomes reachable.

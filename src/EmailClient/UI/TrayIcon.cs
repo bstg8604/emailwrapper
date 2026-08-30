@@ -19,7 +19,7 @@ public sealed class TrayIcon : IDisposable
         _notifyIcon = new WinForms.NotifyIcon
         {
             Icon = new System.Drawing.Icon(iconPath),
-            Text = "Peacock",
+            Text = "Purplemail",
             Visible = true,
             ContextMenuStrip = menu
         };

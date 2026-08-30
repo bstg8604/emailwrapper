@@ -1,0 +1,134 @@
+using MailKit;
+using MailKit.Net.Imap;
+
+namespace EmailClient.Mail;
+
+/// <summary>
+/// Recipient autocomplete built from your own mail history rather than a directory lookup.
+/// IITB's institute-wide address-book suggestions come from an internal LDAP directory that only
+/// Roundcube (running inside the campus network) can reach — this machine can't query it from
+/// off-campus, so there's no institute-wide autocomplete available here. What's still genuinely
+/// useful is everyone you've actually corresponded with, scanned from Sent and Inbox headers and
+/// ranked by how often you've mailed them — the same idea as Gmail's "Other contacts".
+/// </summary>
+public sealed class ContactsIndex
+{
+    private readonly record struct Contact(string Address, string DisplayName, int Score);
+
+    private readonly Dictionary<string, Contact> _byAddress = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Lock _gate = new();
+
+    /// <summary>How many recent messages per folder to scan — enough to be useful, cheap enough to run at startup.</summary>
+    private const int MessagesPerFolder = 400;
+
+    public bool IsReady { get; private set; }
+
+    public async Task BuildAsync(ImapClient imap, string selfAddress)
+    {
+        try
+        {
+            await ScanAsync(imap.Inbox, selfAddress);
+
+            var sent = TryGetSpecial(imap, MailKit.SpecialFolder.Sent);
+            if (sent is not null)
+                await ScanAsync(sent, selfAddress);
+        }
+        catch (Exception)
+        {
+            // Autocomplete is a convenience; a scan failure shouldn't affect anything else.
+        }
+        finally
+        {
+            IsReady = true;
+        }
+    }
+
+    private static IMailFolder? TryGetSpecial(ImapClient imap, MailKit.SpecialFolder special)
+    {
+        try { return imap.GetFolder(special); } catch (Exception) { return null; }
+    }
+
+    private async Task ScanAsync(IMailFolder folder, string selfAddress)
+    {
+        var reopen = !folder.IsOpen;
+        if (reopen)
+            await folder.OpenAsync(FolderAccess.ReadOnly);
+
+        try
+        {
+            var total = folder.Count;
+            if (total == 0)
+                return;
+
+            var start = Math.Max(0, total - MessagesPerFolder);
+            var summaries = await folder.FetchAsync(start, total - 1, MessageSummaryItems.Envelope);
+
+            lock (_gate)
+            {
+                foreach (var summary in summaries)
+                {
+                    foreach (var mailbox in (summary.Envelope?.From ?? []).Concat(summary.Envelope?.To ?? [])
+                                 .Concat(summary.Envelope?.Cc ?? [])
+                                 .OfType<MimeKit.MailboxAddress>())
+                    {
+                        if (string.IsNullOrWhiteSpace(mailbox.Address)
+                            || mailbox.Address.Equals(selfAddress, StringComparison.OrdinalIgnoreCase))
+                            continue;
+
+                        _byAddress.TryGetValue(mailbox.Address, out var existing);
+                        var name = string.IsNullOrWhiteSpace(existing.DisplayName) && !string.IsNullOrWhiteSpace(mailbox.Name)
+                            ? mailbox.Name
+                            : existing.DisplayName;
+                        _byAddress[mailbox.Address] = new Contact(mailbox.Address, name ?? "", existing.Score + 1);
+                    }
+                }
+            }
+        }
+        finally
+        {
+            if (reopen)
+                await folder.CloseAsync();
+        }
+    }
+
+    /// <summary>Top matches for whatever's typed so far, ranked by correspondence frequency.</summary>
+    public IReadOnlyList<string> Suggest(string query, int max = 6)
+    {
+        if (string.IsNullOrWhiteSpace(query))
+            return [];
+
+        lock (_gate)
+        {
+            return _byAddress.Values
+                .Where(c => c.Address.Contains(query, StringComparison.OrdinalIgnoreCase)
+                    || c.DisplayName.Contains(query, StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(c => c.Score)
+                .Take(max)
+                .Select(c => string.IsNullOrWhiteSpace(c.DisplayName) ? c.Address : $"{c.DisplayName} <{c.Address}>")
+                .ToList();
+        }
+    }
+
+    /// <summary>
+    /// Every known contact, browsable rather than typed-ahead — the list behind an address-book
+    /// picker (Apple Mail's "Address" button opens the same idea: a scrollable panel of everyone
+    /// you can mail, not just a search box). Sorted by how often you've corresponded, then name.
+    /// </summary>
+    public IReadOnlyList<ContactEntry> ListAll()
+    {
+        lock (_gate)
+        {
+            return _byAddress.Values
+                .OrderByDescending(c => c.Score)
+                .ThenBy(c => c.DisplayName, StringComparer.OrdinalIgnoreCase)
+                .Select(c => new ContactEntry(
+                    string.IsNullOrWhiteSpace(c.DisplayName) ? c.Address : c.DisplayName,
+                    c.Address,
+                    string.IsNullOrWhiteSpace(c.DisplayName) ? c.Address : $"{c.DisplayName} <{c.Address}>"))
+                .ToList();
+        }
+    }
+}
+
+/// <summary>One entry in the browsable contact list, as the address-book picker displays it.</summary>
+public readonly record struct ContactEntry(string DisplayName, string Address, string Formatted);

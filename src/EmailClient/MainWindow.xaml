@@ -4,22 +4,26 @@
         xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
         xmlns:ui="clr-namespace:EmailClient.UI"
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
-        Title="Peacock" Height="760" Width="1180" MinWidth="820" MinHeight="520"
+        Title="Purplemail" Height="760" Width="1180" MinWidth="820" MinHeight="520"
         WindowStyle="None" ResizeMode="CanResize"
         Background="#FFFAFAFA"
         FontFamily="Segoe UI">
 
     <shell:WindowChrome.WindowChrome>
-        <shell:WindowChrome CaptionHeight="40" ResizeBorderThickness="6" GlassFrameThickness="0" CornerRadius="0"/>
+        <shell:WindowChrome CaptionHeight="40" ResizeBorderThickness="6" GlassFrameThickness="0" CornerRadius="8"/>
     </shell:WindowChrome.WindowChrome>
 
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
         <ui:UnreadFontWeightConverter x:Key="UnreadWeight"/>
 
-        <SolidColorBrush x:Key="AccentBrush" Color="#FF6D28D9"/>
-        <SolidColorBrush x:Key="AccentSoftBrush" Color="#FFF3EEFC"/>
-        <SolidColorBrush x:Key="AccentDeepBrush" Color="#FF4C1D95"/>
+        <!-- AccentBrush/AccentSoftBrush/AccentDeepBrush used to be redefined here locally,
+             duplicating Theme.xaml's ThemeAccent/ThemeAccentSoft/ThemeAccentDeep (identical
+             colours) — now just references the shared ones directly, so the two can't drift. -->
+        <!-- The sidebar's "you're here" cue needs to read as stronger than its own hover state,
+             not weaker — this is what FolderRow's hover trigger and the active-folder rows below
+             (FolderInbox, HighlightFolder, the live folder list's IsActive trigger) both draw from. -->
+        <SolidColorBrush x:Key="FolderActiveBrush" Color="#FFE7D9F7"/>
         <LinearGradientBrush x:Key="AvatarBrush" StartPoint="0,0" EndPoint="1,1">
             <GradientStop Color="#FF8B5CF6" Offset="0"/>
             <GradientStop Color="#FF6D28D9" Offset="1"/>
@@ -28,7 +32,7 @@
         <Style x:Key="ToolbarButton" TargetType="Button">
             <Setter Property="Padding" Value="14,8"/>
             <Setter Property="Margin" Value="0,0,8,0"/>
-            <Setter Property="Background" Value="{StaticResource AccentBrush}"/>
+            <Setter Property="Background" Value="{StaticResource ThemeAccent}"/>
             <Setter Property="Foreground" Value="White"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Cursor" Value="Hand"/>
@@ -54,7 +58,7 @@
             <Setter Property="Width" Value="34"/>
             <Setter Property="Height" Value="34"/>
             <Setter Property="Background" Value="Transparent"/>
-            <Setter Property="Foreground" Value="#FF666666"/>
+            <Setter Property="Foreground" Value="#FF3C3C3C"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="FontFamily" Value="Segoe Fluent Icons, Segoe MDL2 Assets"/>
@@ -62,12 +66,33 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
-                        <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="17">
+                        <Grid>
+                            <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="17"/>
+                            <!-- Hover fades an overlay in/out rather than swapping Bd's own Background
+                                 outright — Bd stays free for any programmatic Background change (a
+                                 toggled-active state, say) to keep showing through underneath. -->
+                            <Border x:Name="HoverOverlay" Background="#FFF1EDFA" CornerRadius="17"
+                                    Opacity="0" IsHitTestVisible="False"/>
                             <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                        </Border>
+                        </Grid>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#FFF1EDFA"/>
+                                <Trigger.EnterActions>
+                                    <BeginStoryboard>
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="HoverOverlay" Storyboard.TargetProperty="Opacity"
+                                                              To="1" Duration="0:0:0.12"/>
+                                        </Storyboard>
+                                    </BeginStoryboard>
+                                </Trigger.EnterActions>
+                                <Trigger.ExitActions>
+                                    <BeginStoryboard>
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="HoverOverlay" Storyboard.TargetProperty="Opacity"
+                                                              To="0" Duration="0:0:0.12"/>
+                                        </Storyboard>
+                                    </BeginStoryboard>
+                                </Trigger.ExitActions>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -95,40 +120,61 @@
                 </Setter.Value>
             </Setter>
         </Style>
+        <!-- Not just WindowGlyphButton + a Style.Trigger — that trigger loses to WindowGlyphButton's
+             own ControlTemplate.Trigger (a template-level Setter beats a Style-level one targeting
+             the same templated Background), so hovering Close showed the shared neutral-gray hover
+             with dark text instead of red-with-white-text. This gets its own template instead. -->
         <Style x:Key="CloseGlyphButton" TargetType="Button" BasedOn="{StaticResource WindowGlyphButton}">
-            <Style.Triggers>
-                <Trigger Property="IsMouseOver" Value="True">
-                    <Setter Property="Background" Value="#FFE81123"/>
-                    <Setter Property="Foreground" Value="White"/>
-                </Trigger>
-            </Style.Triggers>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#FFE81123"/>
+                                <Setter TargetName="Bd" Property="TextElement.Foreground" Value="White"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
 
+        <!-- Previously no hover feedback at all — Background was a flat Transparent with no trigger,
+             so the sidebar's clickable rows gave zero visual cue until actually clicked. -->
         <Style x:Key="FolderRow" TargetType="Border">
             <Setter Property="CornerRadius" Value="7"/>
             <Setter Property="Margin" Value="8,1"/>
             <Setter Property="Padding" Value="12,9"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="Background" Value="Transparent"/>
+            <Style.Triggers>
+                <!-- Distinct from the sidebar's own #FFF8F6FB background, but visibly weaker than
+                     FolderActiveBrush (#FFE7D9F7) — hover is a transient "you're about to click
+                     this" cue and shouldn't outshine the "this is the folder you're in" one. -->
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#FFF0EAFA"/>
+                </Trigger>
+            </Style.Triggers>
         </Style>
 
+        <!-- Previously: selected background (#FFF3EEFC) was nearly white on white, AND the hover
+             trigger was listed after IsSelected — since a later trigger wins when both match, the
+             even-paler hover colour (#FFFBFAFE) actually washed out the "you have this one open"
+             cue whenever the mouse passed over it. Now: a clearer selected tint, an unmissable left
+             accent bar (the same cue Slack/Outlook use for "this is the open item"), and IsSelected
+             ordered last so it always wins over hover. -->
         <Style TargetType="{x:Type ListBoxItem}">
             <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
             <Setter Property="Padding" Value="0"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="{x:Type ListBoxItem}">
-                        <Border x:Name="Bd" Background="Transparent" BorderThickness="0,0,0,1" BorderBrush="#FFF1F1F1">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}" BorderThickness="0,0,0,1" BorderBrush="#FFF1F1F1">
                             <ContentPresenter/>
                         </Border>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="IsSelected" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#FFF3EEFC"/>
-                            </Trigger>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#FFFBFAFE"/>
-                            </Trigger>
-                        </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
@@ -156,8 +202,8 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsChecked" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="{StaticResource AccentSoftBrush}"/>
-                                <Setter Property="Foreground" Value="{StaticResource AccentDeepBrush}"/>
+                                <Setter TargetName="Bd" Property="Background" Value="{StaticResource ThemeAccentSoft}"/>
+                                <Setter Property="Foreground" Value="{StaticResource ThemeAccentDeep}"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -180,13 +226,16 @@
                 <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
             <StackPanel Orientation="Horizontal" Margin="14,0,0,0" VerticalAlignment="Center">
-                <Border Width="18" Height="18" CornerRadius="5" Background="{StaticResource AccentBrush}"/>
-                <TextBlock Text="Peacock" Margin="8,0,0,0" Foreground="#FF444444" FontSize="12.5" FontWeight="SemiBold"/>
+                <Border Width="18" Height="18" CornerRadius="5" Background="{StaticResource ThemeAccent}">
+                    <TextBlock Text="&#xE715;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="9.5"
+                               Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                </Border>
+                <TextBlock Text="Purplemail" Margin="8,0,0,0" Foreground="#FF444444" FontSize="12.5" FontWeight="SemiBold"/>
             </StackPanel>
             <StackPanel Grid.Column="1" Orientation="Horizontal">
-                <Button x:Name="MinimizeButton" Content="&#xE921;" Style="{StaticResource WindowGlyphButton}" Click="MinimizeButton_Click"/>
-                <Button x:Name="MaximizeButton" Content="&#xE922;" Style="{StaticResource WindowGlyphButton}" Click="MaximizeButton_Click"/>
-                <Button x:Name="CloseButton" Content="&#xE8BB;" Style="{StaticResource CloseGlyphButton}" Click="CloseButton_Click"/>
+                <Button x:Name="MinimizeButton" AutomationProperties.Name="Minimize" Content="&#xE921;" Style="{StaticResource WindowGlyphButton}" Click="MinimizeButton_Click"/>
+                <Button x:Name="MaximizeButton" AutomationProperties.Name="Maximize" Content="&#xE922;" Style="{StaticResource WindowGlyphButton}" Click="MaximizeButton_Click"/>
+                <Button x:Name="CloseButton" AutomationProperties.Name="Close" Content="&#xE8BB;" Style="{StaticResource CloseGlyphButton}" Click="CloseButton_Click"/>
             </StackPanel>
         </Grid>
 
@@ -200,7 +249,6 @@
                     <ColumnDefinition Width="280"/>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
 
                 <Button Grid.Column="0" x:Name="ComposeButton" Style="{StaticResource ToolbarButton}" Click="ComposeButton_Click">
@@ -210,15 +258,14 @@
                     </StackPanel>
                 </Button>
 
-                <Button Grid.Column="1" x:Name="RefreshButton" Content="&#xE72C;" Style="{StaticResource IconButton}"
+                <Button Grid.Column="1" x:Name="RefreshButton" Content="&#xE72C;" Style="{StaticResource IconButton}" AutomationProperties.Name="Refresh"
                         ToolTip="Refresh" Click="RefreshButton_Click" Margin="0,0,4,0"/>
 
-                <ComboBox Grid.Column="2" x:Name="SortCombo" Width="112" Margin="0,0,12,0" VerticalAlignment="Center"
-                          SelectedIndex="0" SelectionChanged="SortCombo_SelectionChanged">
-                    <ComboBoxItem Content="Newest first" Tag="Date"/>
-                    <ComboBoxItem Content="Sender A–Z" Tag="Sender"/>
-                    <ComboBoxItem Content="Subject A–Z" Tag="Subject"/>
-                </ComboBox>
+                <!-- Icon button instead of a text dropdown — matches Refresh/Signature/Shortcuts
+                     next to it instead of being the one text control in an otherwise icon-only
+                     toolbar. Opens the same three sort choices as a menu. -->
+                <Button Grid.Column="2" x:Name="SortButton" Content="&#xE71C;" Style="{StaticResource IconButton}"
+                        ToolTip="Sort" AutomationProperties.Name="Sort" Click="SortButton_Click" Margin="0,0,12,0"/>
 
                 <Border Grid.Column="3" Background="#FFF4F4F6" CornerRadius="8" Padding="10,6">
                     <Grid>
@@ -229,17 +276,32 @@
                         <TextBlock Text="&#xE721;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Foreground="#FF999999" FontSize="12" VerticalAlignment="Center" Margin="0,0,8,0"/>
                         <TextBox x:Name="SearchBox" Grid.Column="1" Background="Transparent" BorderThickness="0"
                                  VerticalAlignment="Center" FontSize="13" Tag="Search mail"
-                                 TextChanged="SearchBox_TextChanged"/>
+                                 TextChanged="SearchBox_TextChanged" KeyDown="SearchBox_KeyDown"/>
                     </Grid>
                 </Border>
 
-                <TextBlock Grid.Column="4" x:Name="StatusText" VerticalAlignment="Center" Margin="16,0,0,0" Foreground="#FF9A9A9A" FontSize="12"/>
+                <!-- Right-aligned within its stretch column — left-aligned here left a wide dead
+                     gap between the (usually short) status text and the icon cluster on a wide or
+                     maximized window; right-aligning keeps it visually attached to those icons
+                     instead, and pushes any leftover space back next to the search box instead. -->
+                <TextBlock Grid.Column="4" x:Name="StatusText" VerticalAlignment="Center" Margin="16,0,12,0"
+                           HorizontalAlignment="Right" TextAlignment="Right"
+                           Foreground="#FF9A9A9A" FontSize="12" TextTrimming="CharacterEllipsis"
+                           ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}"/>
 
-                <Button Grid.Column="5" Content="?" FontWeight="Bold" Style="{StaticResource IconButton}"
-                        ToolTip="Keyboard shortcuts" Click="ShortcutsButton_Click"/>
-
-                <Button Grid.Column="6" x:Name="InspectButton" Content="&#xE90F;" Style="{StaticResource IconButton}"
-                        ToolTip="Inspect webmail (DevTools) — verify Roundcube selectors" Click="InspectButton_Click"/>
+                <!-- Content is swapped in code between the plain person glyph (signed out) and a
+                     small colored avatar with the account's initial (signed in) — same visual
+                     language as every message's sender avatar, so "you're signed in" reads at a
+                     glance instead of needing to open the menu or read a tooltip to find out.
+                     Also where signature editing and Help both live now (the account page's own
+                     Signature/Help sections, or once signed in, this button's own menu) instead of
+                     separate toolbar buttons. -->
+                <Button Grid.Column="5" x:Name="SignInButton" Style="{StaticResource IconButton}"
+                        AutomationProperties.Name="Account" Click="SignInButton_Click">
+                    <Button.Content>
+                        <TextBlock Text="&#xE77B;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="15"/>
+                    </Button.Content>
+                </Button>
             </Grid>
         </Border>
 
@@ -254,35 +316,58 @@
 
             <!-- Folder sidebar -->
             <Border Grid.Column="0" Background="#FFF8F6FB">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                 <StackPanel Margin="0,14">
-                    <Border x:Name="FolderInbox" Style="{StaticResource FolderRow}" Background="{StaticResource AccentSoftBrush}"
-                            MouseLeftButtonUp="FolderInbox_Click" Tag="Inbox">
+                    <Border x:Name="FolderInbox" Style="{StaticResource FolderRow}" Background="{StaticResource FolderActiveBrush}"
+                            MouseLeftButtonUp="FolderInbox_Click" Tag="Inbox"
+                            AllowDrop="True" Drop="FolderDrop" DragEnter="FolderDragEnter" DragLeave="FolderDragLeave">
                         <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="Auto"/>
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
-                            <TextBlock Text="&#xE715;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Foreground="{StaticResource AccentDeepBrush}" FontSize="14" VerticalAlignment="Center"/>
-                            <TextBlock Grid.Column="1" Text="Inbox" Margin="10,0,0,0" Foreground="{StaticResource AccentDeepBrush}" FontWeight="SemiBold" FontSize="13" VerticalAlignment="Center"/>
-                            <Border Grid.Column="2" x:Name="InboxUnreadBadge" Background="{StaticResource AccentBrush}" CornerRadius="8" Padding="6,1" VerticalAlignment="Center">
+                            <TextBlock Text="&#xE715;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Foreground="{StaticResource ThemeAccentDeep}" FontSize="14" VerticalAlignment="Center"/>
+                            <TextBlock Grid.Column="1" Text="Inbox" Margin="10,0,0,0" Foreground="{StaticResource ThemeAccentDeep}" FontWeight="SemiBold" FontSize="13" VerticalAlignment="Center"/>
+                            <Border Grid.Column="2" x:Name="InboxUnreadBadge" Background="{StaticResource ThemeAccent}" CornerRadius="8" Padding="6,1" VerticalAlignment="Center">
                                 <TextBlock x:Name="InboxUnreadCount" Foreground="White" FontSize="10.5" FontWeight="SemiBold"/>
                             </Border>
                         </Grid>
                     </Border>
-                    <Border x:Name="FolderSent" Style="{StaticResource FolderRow}" MouseLeftButtonUp="FolderSent_Click" Tag="Sent">
+                    <Border x:Name="FolderSent" Style="{StaticResource FolderRow}" MouseLeftButtonUp="FolderSent_Click" Tag="Sent"
+                            AllowDrop="True" Drop="FolderDrop" DragEnter="FolderDragEnter" DragLeave="FolderDragLeave">
                         <StackPanel Orientation="Horizontal">
                             <TextBlock Text="&#xE724;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Foreground="#FF777777" FontSize="14"/>
                             <TextBlock Text="Sent" Margin="10,0,0,0" Foreground="#FF555555" FontSize="13"/>
                         </StackPanel>
                     </Border>
-                    <Border x:Name="FolderDrafts" Style="{StaticResource FolderRow}" MouseLeftButtonUp="FolderDrafts_Click" Tag="Drafts">
+                    <!-- A distinct document glyph — this used to share the pencil icon with
+                         Compose and "Edit signature", making the sidebar row a step slower to
+                         scan at a glance. -->
+                    <Border x:Name="FolderDrafts" Style="{StaticResource FolderRow}" MouseLeftButtonUp="FolderDrafts_Click" Tag="Drafts"
+                            AllowDrop="True" Drop="FolderDrop" DragEnter="FolderDragEnter" DragLeave="FolderDragLeave">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="&#xE7C3;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Foreground="#FF777777" FontSize="14" VerticalAlignment="Center"/>
+                            <TextBlock Grid.Column="1" Text="Drafts" Margin="10,0,0,0" Foreground="#FF555555" FontSize="13" VerticalAlignment="Center"/>
+                            <Border Grid.Column="2" x:Name="DraftsBadge" Background="#FFB9B0C9" CornerRadius="8" Padding="6,1" VerticalAlignment="Center" Visibility="Collapsed">
+                                <TextBlock x:Name="DraftsCount" Foreground="White" FontSize="10.5" FontWeight="SemiBold"/>
+                            </Border>
+                        </Grid>
+                    </Border>
+                    <Border x:Name="FolderArchive" Style="{StaticResource FolderRow}" MouseLeftButtonUp="FolderArchive_Click" Tag="Archive"
+                            AllowDrop="True" Drop="FolderDrop" DragEnter="FolderDragEnter" DragLeave="FolderDragLeave">
                         <StackPanel Orientation="Horizontal">
-                            <TextBlock Text="&#xE70F;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Foreground="#FF777777" FontSize="14"/>
-                            <TextBlock Text="Drafts" Margin="10,0,0,0" Foreground="#FF555555" FontSize="13"/>
+                            <TextBlock Text="&#xE7B8;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Foreground="#FF777777" FontSize="14"/>
+                            <TextBlock Text="Archive" Margin="10,0,0,0" Foreground="#FF555555" FontSize="13"/>
                         </StackPanel>
                     </Border>
-                    <Border x:Name="FolderTrash" Style="{StaticResource FolderRow}" MouseLeftButtonUp="FolderTrash_Click" Tag="Trash">
+                    <Border x:Name="FolderTrash" Style="{StaticResource FolderRow}" MouseLeftButtonUp="FolderTrash_Click" Tag="Trash"
+                            AllowDrop="True" Drop="FolderDrop" DragEnter="FolderDragEnter" DragLeave="FolderDragLeave">
                         <StackPanel Orientation="Horizontal">
                             <TextBlock Text="&#xE74D;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Foreground="#FF777777" FontSize="14"/>
                             <TextBlock Text="Trash" Margin="10,0,0,0" Foreground="#FF555555" FontSize="13"/>
@@ -297,7 +382,51 @@
                             <TextBlock Text="Starred" Margin="10,0,0,0" Foreground="#FF555555" FontSize="13"/>
                         </StackPanel>
                     </Border>
+
+                    <!-- Every other real IMAP folder, read live out of Roundcube's own sidebar.
+                         Stays hidden on sample data, where only the fixed folders above exist. -->
+                    <StackPanel x:Name="LiveFolderSection" Visibility="Collapsed">
+                        <Border Height="1" Background="#FFEAE5F2" Margin="14,12"/>
+                        <TextBlock Text="FOLDERS" Margin="20,0,0,6" FontSize="10" FontWeight="SemiBold"
+                                   Foreground="#FFA79BC0"/>
+                        <ItemsControl x:Name="LiveFolderList">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Tag="{Binding Mailbox}" MouseLeftButtonUp="LiveFolder_Click"
+                                            ToolTip="{Binding Mailbox}"
+                                            AllowDrop="True" Drop="FolderDrop" DragEnter="FolderDragEnter" DragLeave="FolderDragLeave">
+                                        <Border.Style>
+                                            <Style TargetType="Border" BasedOn="{StaticResource FolderRow}">
+                                                <Style.Triggers>
+                                                    <!-- Ordered after the base style's IsMouseOver trigger so the
+                                                         active-folder tint always wins over hover, not the other
+                                                         way round. -->
+                                                    <DataTrigger Binding="{Binding IsActive}" Value="True">
+                                                        <Setter Property="Background" Value="{StaticResource FolderActiveBrush}"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </Border.Style>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="{Binding Display}" Foreground="#FF555555" FontSize="13"
+                                                       TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                                            <Border Grid.Column="1" Background="{StaticResource ThemeAccent}" CornerRadius="8"
+                                                    Padding="6,1" VerticalAlignment="Center"
+                                                    Visibility="{Binding HasUnread, Converter={StaticResource BoolToVis}}">
+                                                <TextBlock Text="{Binding Unread}" Foreground="White" FontSize="10.5" FontWeight="SemiBold"/>
+                                            </Border>
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
                 </StackPanel>
+                </ScrollViewer>
             </Border>
 
             <Border Grid.Column="1" Background="#FFEDEDED"/>
@@ -307,6 +436,7 @@
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
 
                 <StackPanel x:Name="QuickFilterBar" Grid.Row="0" Orientation="Horizontal" Margin="14,10,14,4">
@@ -323,12 +453,13 @@
                         <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="*"/>
                     </Grid.ColumnDefinitions>
-                    <TextBlock x:Name="BulkCountText" Grid.Column="0" VerticalAlignment="Center" FontSize="12.5" Foreground="{StaticResource AccentDeepBrush}" FontWeight="SemiBold"/>
+                    <TextBlock x:Name="BulkCountText" Grid.Column="0" VerticalAlignment="Center" FontSize="12.5" Foreground="{StaticResource ThemeAccentDeep}" FontWeight="SemiBold"/>
                     <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
-                        <Button Content="&#xE715;" Style="{StaticResource IconButton}" ToolTip="Mark as read" Click="BulkMarkRead_Click"/>
-                        <Button Content="&#xE7B8;" Style="{StaticResource IconButton}" ToolTip="Archive" Click="BulkArchive_Click"/>
-                        <Button Content="&#xE74D;" Style="{StaticResource IconButton}" ToolTip="Delete" Click="BulkDelete_Click"/>
-                        <Button Content="&#xE711;" Style="{StaticResource IconButton}" ToolTip="Clear selection" Click="BulkClear_Click"/>
+                        <Button Content="&#xE715;" Style="{StaticResource IconButton}" ToolTip="Mark as read" AutomationProperties.Name="Mark as read" Click="BulkMarkRead_Click"/>
+                        <Button Content="&#xE7B8;" Style="{StaticResource IconButton}" ToolTip="Archive" AutomationProperties.Name="Archive selected" Click="BulkArchive_Click"/>
+                        <Button x:Name="BulkMoveButton" Content="&#xE8DE;" Style="{StaticResource IconButton}" ToolTip="Move to folder…" AutomationProperties.Name="Move selected to folder" Click="MoveButton_Click"/>
+                        <Button Content="&#xE74D;" Style="{StaticResource IconButton}" ToolTip="Delete" AutomationProperties.Name="Delete selected" Click="BulkDelete_Click"/>
+                        <Button Content="&#xE711;" Style="{StaticResource IconButton}" ToolTip="Clear selection" AutomationProperties.Name="Clear selection" Click="BulkClear_Click"/>
                     </StackPanel>
                 </Grid>
 
@@ -339,34 +470,88 @@
                          KeyDown="MessageList_KeyDown">
                     <ListBox.ItemTemplate>
                         <DataTemplate>
-                            <Grid Margin="14,12">
+                            <Grid Margin="0" Tag="{Binding}" MouseRightButtonUp="MessageRow_ContextMenu"
+                                  PreviewMouseLeftButtonDown="MessageRow_PreviewMouseLeftButtonDown"
+                                  PreviewMouseMove="MessageRow_PreviewMouseMove">
+                                <!-- Full-bleed background + left accent bar, driven by the same
+                                     AncestorType=ListBoxItem binding pattern the checkbox below
+                                     already uses successfully — a ControlTemplate.Trigger on
+                                     ListBoxItem.IsSelected wasn't visually taking effect here, so
+                                     this sidesteps that instead of chasing why. -->
+                                <Grid.Style>
+                                    <Style TargetType="Grid">
+                                        <Setter Property="Background" Value="Transparent"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType=ListBoxItem}, Path=IsMouseOver}" Value="True">
+                                                <Setter Property="Background" Value="#FFFBFAFE"/>
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType=ListBoxItem}, Path=IsSelected}" Value="True">
+                                                <Setter Property="Background" Value="#FFEDE0FA"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Grid.Style>
                                 <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="3"/>
                                     <ColumnDefinition Width="Auto"/>
                                     <ColumnDefinition Width="Auto"/>
                                     <ColumnDefinition Width="*"/>
                                     <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
 
-                                <CheckBox Grid.Column="0" VerticalAlignment="Top" Margin="0,2,10,0" Tag="{Binding}"
-                                          Checked="RowCheck_Changed" Unchecked="RowCheck_Changed"
-                                          PreviewMouseLeftButtonDown="StarToggle_PreviewMouseDown"/>
+                                <Border Grid.Column="0" Background="Transparent">
+                                    <Border.Style>
+                                        <Style TargetType="Border">
+                                            <Setter Property="Background" Value="Transparent"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType=ListBoxItem}, Path=IsSelected}" Value="True">
+                                                    <Setter Property="Background" Value="{StaticResource ThemeAccent}"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Border.Style>
+                                </Border>
 
-                                <Border Grid.Column="1" Width="34" Height="34" CornerRadius="17"
-                                        Background="{StaticResource AvatarBrush}" VerticalAlignment="Top" Margin="0,0,10,0">
+                                <!-- Hidden until bulk-select mode is actually on (or this particular
+                                     row is already checked) — no longer shown on hover at all, and
+                                     the column itself collapses to zero width rather than reserving
+                                     dead space on every row all the time. Entering bulk-select mode
+                                     shifting the list over slightly is an acceptable, infrequent
+                                     trade for not having a permanent empty gutter. -->
+                                <CheckBox Grid.Column="1" VerticalAlignment="Top" Margin="0,14,10,0" Tag="{Binding}"
+                                          Checked="RowCheck_Changed" Unchecked="RowCheck_Changed"
+                                          PreviewMouseLeftButtonDown="StarToggle_PreviewMouseDown">
+                                    <CheckBox.Style>
+                                        <Style TargetType="CheckBox">
+                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding Visibility, ElementName=BulkActionBar}" Value="Visible">
+                                                    <Setter Property="Visibility" Value="Visible"/>
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding IsChecked, RelativeSource={RelativeSource Self}}" Value="True">
+                                                    <Setter Property="Visibility" Value="Visible"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </CheckBox.Style>
+                                </CheckBox>
+
+                                <Border Grid.Column="2" Width="34" Height="34" CornerRadius="17" Margin="10,12,10,0"
+                                        Background="{StaticResource AvatarBrush}" VerticalAlignment="Top">
                                     <TextBlock Text="{Binding Initial}" Foreground="White" FontWeight="SemiBold"
                                                HorizontalAlignment="Center" VerticalAlignment="Center"/>
                                 </Border>
 
-                                <StackPanel Grid.Column="2">
+                                <StackPanel Grid.Column="3" Margin="0,12,0,12">
                                     <Grid>
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="*"/>
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
                                         <StackPanel Orientation="Horizontal" Grid.Column="0">
-                                            <Ellipse Width="7" Height="7" Fill="{StaticResource AccentBrush}" Margin="0,0,6,0"
+                                            <Ellipse Width="7" Height="7" Fill="{StaticResource ThemeAccent}" Margin="0,0,6,0"
                                                      Visibility="{Binding Unread, Converter={StaticResource BoolToVis}}"/>
-                                            <TextBlock Text="{Binding Sender}" FontSize="13"
+                                            <TextBlock Text="{Binding Sender}" FontSize="12" Foreground="#FF6B6B6B"
                                                        FontWeight="{Binding Unread, Converter={StaticResource UnreadWeight}}"/>
                                         </StackPanel>
                                         <StackPanel Grid.Column="1" Orientation="Horizontal">
@@ -376,14 +561,26 @@
                                             <TextBlock Text="{Binding Date}" Foreground="#FF9A9A9A" FontSize="11"/>
                                         </StackPanel>
                                     </Grid>
-                                    <TextBlock Text="{Binding Subject}" FontSize="12" Margin="0,3,0,0"
-                                               TextTrimming="CharacterEllipsis"
-                                               FontWeight="{Binding Unread, Converter={StaticResource UnreadWeight}}"/>
+                                    <Grid Margin="0,3,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <Border Grid.Column="0" Background="#FFEFE9FA" CornerRadius="4" Padding="5,1" Margin="0,0,6,0"
+                                                VerticalAlignment="Center"
+                                                Visibility="{Binding HasCourseCode, Converter={StaticResource BoolToVis}}">
+                                            <TextBlock Text="{Binding CourseCode}" FontSize="9.5" FontWeight="SemiBold"
+                                                       Foreground="{StaticResource ThemeAccentDeep}"/>
+                                        </Border>
+                                        <TextBlock Grid.Column="1" Text="{Binding Subject}" FontSize="13" Foreground="#FF262626"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   FontWeight="{Binding Unread, Converter={StaticResource UnreadWeight}}"/>
+                                    </Grid>
                                     <TextBlock Text="{Binding Snippet}" FontSize="11" Foreground="#FFAAAAAA"
                                                Margin="0,2,0,0" TextTrimming="CharacterEllipsis"/>
                                 </StackPanel>
 
-                                <Button Grid.Column="3" Style="{StaticResource StarToggle}" VerticalAlignment="Top"
+                                <Button Grid.Column="4" Style="{StaticResource StarToggle}" VerticalAlignment="Top" Margin="0,12,14,0"
                                         Click="StarToggle_Click" Tag="{Binding}"
                                         PreviewMouseLeftButtonDown="StarToggle_PreviewMouseDown">
                                     <TextBlock FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="13">
@@ -408,16 +605,41 @@
 
                 <TextBlock Grid.Row="1" x:Name="ListEmptyState" Text="No messages" Foreground="#FFC5C5C5" FontSize="13"
                            HorizontalAlignment="Center" VerticalAlignment="Center" Visibility="Collapsed"/>
+
+                <!-- Roundcube paginates server-side, so only one page of rows ever exists in the
+                     live DOM — this bar is how anything past the first page is reachable. -->
+                <Border x:Name="PagerBar" Grid.Row="2" BorderBrush="#FFF1F1F1" BorderThickness="0,1,0,0"
+                        Padding="10,6" Visibility="Collapsed">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <Button Grid.Column="0" x:Name="PrevPageButton" Content="&#xE76B;" Style="{StaticResource IconButton}"
+                                Width="28" Height="28" FontSize="11" ToolTip="Previous page" AutomationProperties.Name="Previous page" Click="PrevPage_Click"/>
+                        <TextBlock Grid.Column="1" x:Name="PagerText" HorizontalAlignment="Center" VerticalAlignment="Center"
+                                   FontSize="11.5" Foreground="#FF8A8A8A"/>
+                        <Button Grid.Column="2" x:Name="NextPageButton" Content="&#xE76C;" Style="{StaticResource IconButton}"
+                                Width="28" Height="28" FontSize="11" ToolTip="Next page" AutomationProperties.Name="Next page" Click="NextPage_Click"/>
+                    </Grid>
+                </Border>
             </Grid>
 
             <Border Grid.Column="3" Background="#FFEDEDED"/>
 
             <!-- Reading pane -->
             <Grid Grid.Column="4" Background="#FFFBFAFC">
-                <TextBlock x:Name="EmptyState" Text="Select a message to read"
-                           Foreground="#FFC5C5C5" FontSize="14" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                <StackPanel x:Name="EmptyState" HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <Border Width="72" Height="72" CornerRadius="36" Background="#FFF0EBFA" HorizontalAlignment="Center">
+                        <TextBlock Text="&#xE715;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="28"
+                                   Foreground="#FFC3B3EC" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <TextBlock Text="Select a message to read" Foreground="#FFB5AFC2" FontSize="14"
+                               HorizontalAlignment="Center" Margin="0,16,0,0"/>
+                </StackPanel>
 
-                <Border x:Name="ReadingCard" Margin="24" Background="White" CornerRadius="12" Visibility="Collapsed"
+                <Border x:Name="ReadingCard" Margin="16" Background="White" CornerRadius="12" Visibility="Collapsed"
                         BorderBrush="#FFEDEDED" BorderThickness="1">
                     <Border.Effect>
                         <DropShadowEffect Color="#FF000000" Opacity="0.05" BlurRadius="18" ShadowDepth="2"/>
@@ -429,83 +651,82 @@
                             <RowDefinition Height="*"/>
                         </Grid.RowDefinitions>
 
-                        <StackPanel Grid.Row="0" Margin="28,24,28,16">
-                            <TextBlock x:Name="ReadingSubject" FontSize="19" FontWeight="SemiBold" TextWrapping="Wrap"/>
-                            <Grid Margin="0,14,0,0">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="Auto"/>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-                                <Border Width="30" Height="30" CornerRadius="15" Background="{StaticResource AvatarBrush}">
-                                    <TextBlock x:Name="ReadingAvatarInitial" Foreground="White" FontWeight="SemiBold" FontSize="12"
-                                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                                </Border>
-                                <StackPanel Grid.Column="1" Margin="10,0,0,0" VerticalAlignment="Center">
-                                    <TextBlock x:Name="ReadingFrom" FontSize="12.5" Foreground="#FF444444"/>
-                                    <TextBlock x:Name="ReadingDate" FontSize="11" Foreground="#FF9A9A9A"/>
-                                </StackPanel>
-                                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-                                    <Button Content="&#xE8CA;" Style="{StaticResource IconButton}" ToolTip="Reply" Click="ReplyButton_Click"/>
-                                    <Button Content="&#xE97A;" Style="{StaticResource IconButton}" ToolTip="Reply all" Click="ReplyAllButton_Click"/>
-                                    <Button Content="&#xE72D;" Style="{StaticResource IconButton}" ToolTip="Forward" Click="ForwardButton_Click"/>
-                                    <Button x:Name="MarkUnreadButton" Content="&#xE715;" Style="{StaticResource IconButton}" ToolTip="Mark as unread" Click="MarkUnreadButton_Click"/>
-                                    <Button Content="&#xE7B8;" Style="{StaticResource IconButton}" ToolTip="Archive" Click="ArchiveButton_Click"/>
-                                    <Button Content="&#xE74D;" Style="{StaticResource IconButton}" ToolTip="Delete" Click="DeleteButton_Click"/>
-                                </StackPanel>
-                            </Grid>
-                        </StackPanel>
-
-                        <Border Grid.Row="0" VerticalAlignment="Bottom" Height="1" Background="#FFF0F0F0" Margin="28,0"/>
-
-                        <Border x:Name="ImagesBlockedBar" Grid.Row="1" Background="#FFFDF6E3" CornerRadius="6"
-                                Margin="28,12,28,0" Padding="12,7" Visibility="Collapsed">
+                        <StackPanel Grid.Row="0" Margin="24,18,24,12">
                             <Grid>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/>
                                     <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
-                                <TextBlock Text="Images are hidden to protect your privacy" FontSize="12" Foreground="#FF8A6D1D" VerticalAlignment="Center"/>
-                                <Button Grid.Column="1" Content="Show images" FontSize="12" Background="Transparent" BorderThickness="0"
-                                        Foreground="{StaticResource AccentDeepBrush}" Cursor="Hand" Click="ShowImagesButton_Click"/>
+                                <TextBlock x:Name="ReadingSubject" Grid.Column="0" FontSize="19" FontWeight="SemiBold"
+                                           TextWrapping="Wrap" VerticalAlignment="Center"/>
+                                <!-- Grouped rather than seven identical-weight icons in a row: reply
+                                     actions, then organize actions, then Delete set apart with extra
+                                     spacing — it's the one truly destructive action here and
+                                     shouldn't sit flush against Move with nothing to distinguish it. -->
+                                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                    <Button Content="&#xE8CA;" Style="{StaticResource IconButton}" ToolTip="Reply" AutomationProperties.Name="Reply" Click="ReplyButton_Click"/>
+                                    <Button Content="&#xE97A;" Style="{StaticResource IconButton}" ToolTip="Reply all" AutomationProperties.Name="Reply all" Click="ReplyAllButton_Click"/>
+                                    <Button Content="&#xE72D;" Style="{StaticResource IconButton}" ToolTip="Forward" AutomationProperties.Name="Forward" Click="ForwardButton_Click"/>
+                                    <Border Width="1" Height="18" Background="#FFEAEAEA" Margin="6,0" VerticalAlignment="Center"/>
+                                    <Button x:Name="MarkUnreadButton" Content="&#xE715;" Style="{StaticResource IconButton}" ToolTip="Mark as unread" AutomationProperties.Name="Mark as unread" Click="MarkUnreadButton_Click"/>
+                                    <Button Content="&#xE7B8;" Style="{StaticResource IconButton}" ToolTip="Archive" AutomationProperties.Name="Archive" Click="ArchiveButton_Click"/>
+                                    <Button x:Name="MoveButton" Content="&#xE8DE;" Style="{StaticResource IconButton}" ToolTip="Move to folder…" AutomationProperties.Name="Move to folder" Click="MoveButton_Click"/>
+                                    <Border Width="1" Height="18" Background="#FFEAEAEA" Margin="6,0" VerticalAlignment="Center"/>
+                                    <Button Content="&#xE74D;" Style="{StaticResource IconButton}" ToolTip="Delete" AutomationProperties.Name="Delete" Click="DeleteButton_Click"/>
+                                </StackPanel>
                             </Grid>
-                        </Border>
+                            <!-- Hidden for a multi-message conversation — each card carries its own
+                                 from/date header there, so repeating the latest one here too would
+                                 just be redundant. The margin lives on this row itself (not a
+                                 wrapping element) so collapsing it leaves zero gap behind, keeping
+                                 the subject and toolbar on one line with nothing hanging below. -->
+                            <StackPanel x:Name="ReadingFromRow" Orientation="Horizontal" Margin="0,10,0,0">
+                                <Border x:Name="ReadingAvatarBorder" Width="30" Height="30" CornerRadius="15" Background="{StaticResource AvatarBrush}">
+                                    <TextBlock x:Name="ReadingAvatarInitial" Foreground="White" FontWeight="SemiBold" FontSize="12"
+                                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
+                                <StackPanel x:Name="ReadingFromPanel" Margin="10,0,0,0" VerticalAlignment="Center">
+                                    <TextBlock x:Name="ReadingFrom" FontSize="12.5" Foreground="#FF444444"/>
+                                    <TextBlock x:Name="ReadingDate" FontSize="11" Foreground="#FF9A9A9A"/>
+                                </StackPanel>
+                            </StackPanel>
+                        </StackPanel>
 
-                        <Grid Grid.Row="2">
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="*"/>
-                                <RowDefinition Height="Auto"/>
-                            </Grid.RowDefinitions>
+                        <Border Grid.Row="0" VerticalAlignment="Bottom" Height="1" Background="#FFF0F0F0" Margin="24,0"/>
 
-                            <wv2:WebView2 x:Name="ReadingPane" Grid.Row="0" Margin="28,16,28,0"/>
+                        <StackPanel Grid.Row="1">
+                            <!-- Sent from outside your own organisation's domain — a quiet visual
+                                 cue (not a blocker), the same convention Outlook/Gmail use for
+                                 "this message is from an external sender". Internal mail shows no
+                                 bar at all, so this only ever adds friction where it's warranted. -->
+                            <Border x:Name="ExternalSenderBar" Background="#FFEFF3FD" CornerRadius="6"
+                                    Margin="24,10,24,0" Padding="10,6" Visibility="Collapsed">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="&#xE774;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                                               FontSize="12" Foreground="#FF3A5FA0" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                    <TextBlock Text="This message came from outside your organisation" FontSize="12"
+                                               Foreground="#FF3A5FA0" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </Border>
 
-                            <ItemsControl x:Name="AttachmentList" Grid.Row="1" Margin="28,14,28,24" Visibility="Collapsed">
-                                <ItemsControl.ItemsPanel>
-                                    <ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate>
-                                </ItemsControl.ItemsPanel>
-                                <ItemsControl.ItemTemplate>
-                                    <DataTemplate>
-                                        <Button Margin="0,0,8,8" Padding="10,7" Background="#FFF4F4F6" BorderThickness="0"
-                                                Cursor="Hand" Click="Attachment_Click" Tag="{Binding}" ToolTip="Save attachment">
-                                            <Button.Template>
-                                                <ControlTemplate TargetType="Button">
-                                                    <Border Background="{TemplateBinding Background}" CornerRadius="7" Padding="{TemplateBinding Padding}">
-                                                        <ContentPresenter/>
-                                                    </Border>
-                                                </ControlTemplate>
-                                            </Button.Template>
-                                            <StackPanel Orientation="Horizontal">
-                                                <TextBlock Text="&#xE723;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
-                                                           FontSize="12" Foreground="#FF777777" VerticalAlignment="Center" Margin="0,0,7,0"/>
-                                                <TextBlock Text="{Binding Name}" FontSize="12" VerticalAlignment="Center"/>
-                                                <TextBlock Text="{Binding Size}" FontSize="11" Foreground="#FFAAAAAA"
-                                                           VerticalAlignment="Center" Margin="7,0,0,0"/>
-                                            </StackPanel>
-                                        </Button>
-                                    </DataTemplate>
-                                </ItemsControl.ItemTemplate>
-                            </ItemsControl>
-                        </Grid>
+                            <Border x:Name="ImagesBlockedBar" Background="#FFFDF6E3" CornerRadius="6"
+                                    Margin="24,10,24,0" Padding="10,6" Visibility="Collapsed">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="Images are hidden to protect your privacy" FontSize="12" Foreground="#FF8A6D1D" VerticalAlignment="Center"/>
+                                    <Button Grid.Column="1" Content="Show images" FontSize="12" Background="Transparent" BorderThickness="0"
+                                            Foreground="{StaticResource ThemeAccentDeep}" Cursor="Hand" Click="ShowImagesButton_Click"/>
+                                </Grid>
+                            </Border>
+                        </StackPanel>
+
+                        <!-- Attachments now render inside each message's own card in the HTML
+                             (see BuildConversationHtml) instead of in a separate section pinned to
+                             the bottom of the pane, disconnected from the message that owns them. -->
+                        <wv2:WebView2 x:Name="ReadingPane" Grid.Row="2" Margin="24,12,24,16"/>
                     </Grid>
                 </Border>
             </Grid>
@@ -518,47 +739,11 @@
                 <DropShadowEffect Color="#FF000000" Opacity="0.25" BlurRadius="16" ShadowDepth="3"/>
             </Border.Effect>
             <StackPanel Orientation="Horizontal">
-                <TextBlock Text="Message sent" Foreground="White" FontSize="13" VerticalAlignment="Center"/>
+                <TextBlock x:Name="SendSnackbarText" Text="Message sent" Foreground="White" FontSize="13" VerticalAlignment="Center"/>
                 <Button Content="UNDO" Margin="24,0,0,0" Background="Transparent" Foreground="#FFC4A6F5" BorderThickness="0"
                         FontWeight="SemiBold" FontSize="12" Cursor="Hand" Click="UndoSend_Click"/>
             </StackPanel>
         </Border>
 
-        <!-- Keyboard shortcuts cheat sheet ("?") -->
-        <Grid x:Name="ShortcutsOverlay" Grid.RowSpan="3" Background="#88000000" Visibility="Collapsed">
-            <Border Background="White" CornerRadius="12" Padding="28" Width="440" HorizontalAlignment="Center" VerticalAlignment="Center">
-                <Border.Effect>
-                    <DropShadowEffect Color="#FF000000" Opacity="0.2" BlurRadius="24" ShadowDepth="4"/>
-                </Border.Effect>
-                <StackPanel>
-                    <Grid Margin="0,0,0,16">
-                        <TextBlock Text="Keyboard shortcuts" FontSize="16" FontWeight="SemiBold"/>
-                        <Button Content="&#xE8BB;" Style="{StaticResource IconButton}" HorizontalAlignment="Right"
-                                Width="26" Height="26" FontSize="10" Click="CloseShortcutsOverlay_Click"/>
-                    </Grid>
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="*"/>
-                        </Grid.ColumnDefinitions>
-                        <StackPanel Grid.Column="0">
-                            <TextBlock Text="c — Compose" Margin="0,4" FontSize="12.5"/>
-                            <TextBlock Text="r — Reply" Margin="0,4" FontSize="12.5"/>
-                            <TextBlock Text="a — Reply all" Margin="0,4" FontSize="12.5"/>
-                            <TextBlock Text="f — Forward" Margin="0,4" FontSize="12.5"/>
-                            <TextBlock Text="e — Archive" Margin="0,4" FontSize="12.5"/>
-                            <TextBlock Text="# — Delete" Margin="0,4" FontSize="12.5"/>
-                        </StackPanel>
-                        <StackPanel Grid.Column="1">
-                            <TextBlock Text="j / k — Next / previous" Margin="0,4" FontSize="12.5"/>
-                            <TextBlock Text="u — Back to list" Margin="0,4" FontSize="12.5"/>
-                            <TextBlock Text="/ — Search" Margin="0,4" FontSize="12.5"/>
-                            <TextBlock Text="g then i/s/d/t — Go to folder" Margin="0,4" FontSize="12.5"/>
-                            <TextBlock Text="? — This menu" Margin="0,4" FontSize="12.5"/>
-                        </StackPanel>
-                    </Grid>
-                </StackPanel>
-            </Border>
-        </Grid>
     </Grid>
 </Window>

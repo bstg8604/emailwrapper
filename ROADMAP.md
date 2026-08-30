@@ -11,14 +11,39 @@ The user now wants "every feature/option" — explicitly benchmarking against Gm
 
 ## Priority tiers
 
-### Tier 0 — Make the automation layer real (blocks everything backend-facing)
+### Tier 0 — SUPERSEDED (2026-08-29)
+The app moved from webmail-automation (WebView2 puppeting Roundcube) to a real IMAP/SMTP client
+— see `PLAN.md`. Every item below was about verifying and hardening that automation layer; none
+of it applies anymore, since there's no DOM to scrape or selectors to verify. What replaced it:
+IMAP folder/message/flag operations and SMTP send in `Mail/ImapMailBackend.cs`, done and building,
+not yet tested against a real account. Left below for history only.
+
+<details>
+<summary>Original Tier 0 (webmail-automation era, no longer applicable)</summary>
+
+### Tier 0 (historical) — Make the automation layer real (blocks everything backend-facing)
 Currently `UseMockData = true` in `MainWindow.xaml.cs` short-circuits almost everything. Nothing in Tiers 1–3 that touches real mail is trustworthy until this is done:
-1. Live-verify `DomBridge.cs` selectors against the authenticated site via the existing "Inspect webmail (DevTools)" button — rows, compose/send, preview iframe.
-2. Handle session expiry mid-use (re-show `AutomationHost` for re-login, resume the pending action after).
-3. Extend `DomBridge` beyond Inbox: folder switching needs to actually navigate Roundcube to Sent/Drafts/Trash/other folders and re-scrape, not just swap mock arrays (`MainWindow.LoadFolder`).
-4. Pagination — Roundcube paginates the message list; `ListInboxAsync` currently only reads what's rendered on the current page.
-5. Mark read/unread, delete, archive, move-to-folder as real `DomBridge` actions (click the real Roundcube controls), replacing `MainWindow.RemoveMessage`'s local-only removal.
-6. Attachments: list attachments on a scraped message, trigger a real download through Roundcube's own download link/button (WebView2 download events).
+1. Live-verify `DomBridge.cs` selectors against the authenticated site via the existing "Inspect webmail (DevTools)" button — rows, compose/send, preview iframe. **← the only item left; needs a real login**
+2. ✅ Handle session expiry mid-use (re-show `AutomationHost` for re-login, resume the pending action after). Every injected script now starts with a login-form guard; on a hit the bridge triggers re-login and retries the same script.
+3. ✅ Extend `DomBridge` beyond Inbox: `ListFoldersAsync` / `SelectFolderAsync` navigate Roundcube for real, and the sidebar lists the account's actual IMAP folders. Special-folder names come from Roundcube's own `env` rather than being guessed.
+4. ✅ Pagination — `ListMessagesAsync` returns a `MessagePage` with page/pageCount/total, driven by a new pager bar via Roundcube's own pager controls.
+5. ✅ Mark read/unread, delete, archive, move-to-folder as real `DomBridge` actions. Each clicks the real Roundcube control first and only falls back to `rcmail.command(...)` — Roundcube's own dispatcher — if that control is absent in this skin.
+6. ✅ Attachments: scraped from both the preview frame and top document; downloaded through `CoreWebView2.DownloadStarting` from a hidden iframe, so the automation page never navigates off the mailbox.
+
+> Items 2–6 are **written and compiling, not yet live-verified** — they all run through the same
+> selectors item 1 covers. See `PROGRESS.md` for the detail and for the per-user .NET SDK note.
+
+</details>
+
+### Tier 0 (new) — IMAP/SMTP backend
+1. ✅ Connect, authenticate, list folders, list/open messages, flags, move/delete/archive, save
+   draft — `Mail/ImapMailBackend.cs`. Builds clean; **not yet tested against a real account.**
+2. ✅ Send via SMTP, with a Sent-folder copy appended afterward (plain SMTP doesn't file one on
+   its own).
+3. ⏳ **SMTP host/port need confirming** — currently a best guess (`smtp-auth.iitb.ac.in:587`,
+   STARTTLS), editable in the sign-in dialog's "Server settings" without a rebuild.
+4. Live refresh is 60-second polling; a real IMAP IDLE connection would be a natural upgrade for
+   instant push once the basics are proven live.
 
 ### Tier 1 — Core mail-client parity (Gmail / Outlook / Apple Mail / Betterbird baseline)
 - ✅ **Reply-all** — pre-fills To from sender, Cc from the original To+Cc.
@@ -27,11 +52,11 @@ Currently `UseMockData = true` in `MainWindow.xaml.cs` short-circuits almost eve
 - ✅ **Mark unread/read toggle** — auto-read on open, explicit "mark unread" action, live Inbox unread badge.
 - ✅ **Sort options** — date / sender / subject via the toolbar dropdown.
 - ✅ **Image/external-content blocking** — remote `<img>` srcs are swapped for a transparent pixel with a "Show images" bar (`SanitizeRemoteImages` in `MainWindow.xaml.cs`).
-- ✅ **Attachments (viewing)** — attachment chips in the reading pane; clicking opens a Save dialog. Sample data writes a placeholder file; the live path still needs Tier 0.
-- ✅ **Drafts (local)** — closing compose with unsent content saves to Drafts; reopening a draft resumes editing. Real Roundcube draft-save still pending Tier 0.
+- ✅ **Attachments (viewing)** — attachment chips in the reading pane open an **in-app viewer** (`UI/AttachmentViewerWindow`): PDFs in Edge's own viewer, images on the app backdrop, text-like files as monospace text, HTML/SVG as source rather than executed, and an honest fallback otherwise. Save-a-copy and Open-externally are secondary actions. Sample attachments are real generated files (PDF/PNG/TXT); the live path downloads through the authenticated session into the same viewer, pending Tier 0 verification.
+- ✅ **Drafts** — closing compose with unsent content saves to Drafts; reopening a draft resumes editing, formatting included. `Mail/ImapMailBackend.SaveDraftAsync` appends a real draft via IMAP; not yet live-tested.
 - **Conversation/thread view** — group messages by subject/thread like Gmail, with expand/collapse.
-- **Attachments in Compose** — add via file picker, show as chips, remove before sending; requires driving Roundcube's real attachment upload input.
-- **Rich text formatting toolbar** in Compose (bold/italic/underline/lists/links) — Roundcube's HTML compose already has this; needs DomBridge to toggle it on and forward toolbar clicks, or a parallel WPF RichTextBox that gets serialized to HTML before send.
+- ✅ **Attachments in Compose** — file picker *and* drag-and-drop, chips with real sizes, remove before sending. Sent as real MIME attachments via `MailKit.BodyBuilder`; not yet live-tested.
+- ✅ **Rich text formatting toolbar** in Compose — bold/italic/underline/strikethrough, bulleted and numbered lists, indent/outdent, block quote, alignment, font size, colour, links, clear formatting, plus a plain-text toggle. Implemented as a WebView2 `contenteditable` rather than a WPF RichTextBox, so the body is already the HTML a MIME message wants — no FlowDocument-to-HTML layer in between. Replies/forwards quote the original as a real `<blockquote>` that keeps its formatting.
 - **Remaining message actions**: flag/important marker, move to folder (drag-and-drop and a "Move to…" menu), print.
 - **View options** not yet done: toggle conversation view on/off; reading-pane position (right vs. bottom vs. off, like Outlook); sort by size.
 - **External link warning** — confirm before opening links from message bodies in the default browser.
@@ -39,12 +64,12 @@ Currently `UseMockData = true` in `MainWindow.xaml.cs` short-circuits almost eve
 ### Tier 2 — Productivity features (what makes Gmail/Superhuman/Outlook feel fast)
 - ✅ **Keyboard shortcuts**, Gmail-style: `c` compose, `r`/`a`/`f` reply/reply-all/forward, `e` archive, `#` delete, `j`/`k` next/prev, `u` back to list, `/` focus search, `g` then `i`/`s`/`d`/`t` to switch folder, `?` cheat-sheet overlay (also reachable from the toolbar "?" button). Shortcuts are suppressed while a text field has focus.
 - ✅ **Undo send** — Send hands the message to `MainWindow`, which shows a 5-second snackbar with UNDO before actually dispatching; undo reopens the message in compose. Sent mail lands in the Sent folder.
-- **Snooze** — hide a message from Inbox until a later time (Gmail); purely a local UI/state feature since Roundcube has no native snooze — would need local scheduling + re-surfacing.
+- **Snooze** — hide a message from Inbox until a later time (Gmail); a local UI/state feature — no server-side snooze exists over IMAP either, so this needs local scheduling + re-surfacing regardless of backend.
 - **Scheduled send** — pick a future send time; same local-scheduling approach as snooze.
 - **Signature** — configurable per-account signature auto-inserted into new/reply/forward compose bodies.
-- **Contacts/address book** — autocomplete recipients in To/Cc/Bcc from Roundcube's real address book (scrape/search via DomBridge) or a local contacts cache built from message history.
+- ✅ **Contacts autocomplete** — `Mail/ContactsIndex.cs` builds a ranked list from Sent/Inbox correspondence history, wired into Compose's To/Cc/Bcc as a dropdown. No institute-wide directory lookup (IITB's LDAP directory isn't reachable off-campus — see `PLAN.md`); an LDAP settings slot could be added later for on-campus/VPN use.
 - **Saved/advanced search** — filters by from/to/subject/date range/has-attachment/folder, with the ability to save a search as a quick filter (extending the existing `FilterMessage`/quick-filter-chip mechanism in `MainWindow.xaml.cs`).
-- **Filters/rules** — "when mail matches X, do Y" (Outlook rules / Gmail filters) — would need to either drive Roundcube's own filter settings UI or reimplement rule matching locally on top of scraped mail.
+- **Filters/rules** — "when mail matches X, do Y" (Outlook rules / Gmail filters) — IMAP has no built-in rule engine, so this means reimplementing rule matching locally on top of fetched mail, or driving Sieve if the server exposes ManageSieve.
 - **Desktop notification actions** — Windows toast with inline "Archive"/"Reply" actions, not just a plain balloon (current `TrayIcon.ShowBalloon` is text-only).
 - **Taskbar unread badge overlay** on the app's taskbar icon (Outlook/Mail app convention), in addition to the existing sidebar unread count.
 
@@ -56,7 +81,7 @@ Currently `UseMockData = true` in `MainWindow.xaml.cs` short-circuits almost eve
 - **Pop-out reading pane** to its own window (Gmail "open in new window").
 - **Jump list** (right-click taskbar icon → "Compose new message" shortcut).
 - **Single-instance enforcement** — launching the exe again should focus the existing window/tray icon instead of opening a second instance.
-- **Local message cache for offline reading** — persist scraped messages (e.g. SQLite or a simple JSON store) so recently read mail is viewable without a live Roundcube session.
+- **Local message cache for offline reading** — persist fetched messages (e.g. SQLite or a simple JSON store) keyed by IMAP `UIDVALIDITY`+UID, so recently read mail is viewable without a live connection.
 - **Settings window** — a real preferences UI (currently there is none) covering: notifications on/off, sound, signature editor, theme, density, reading-pane position, keyboard-shortcut reference, start-with-Windows toggle, about/version.
 - **Start with Windows** toggle (registry Run key or a Startup shortcut).
 - **Accessibility** — screen-reader labels on icon-only buttons (compose/star/reply/etc. currently rely on glyphs + tooltip only), high-contrast theme support, full keyboard navigation of the 3-pane layout.
@@ -83,9 +108,10 @@ shortcuts, undo send). See `PROGRESS.md`.
    multiple compose windows, offline cache, accessibility.
 5. Tier 4 — naming/branding, then icon, installer, auto-update.
 
-**Known gap worth fixing early in Tier 3:** icon-only buttons currently expose no accessible
-name (they rely on glyph + tooltip), which hurts screen readers *and* makes UI automation
-testing awkward — adding `AutomationProperties.Name` is cheap and pays off twice.
+**Known gap worth fixing early in Tier 3:** ✅ done 2026-08-29 — 20 icon-only buttons now carry
+`AutomationProperties.Name`. It paid off immediately: the new move-to-folder flow was verified
+through UI Automation because of it. (Per-row star toggles and checkboxes live inside a
+`DataTemplate` and still have none — reachable only via the UIA raw tree.)
 
 ## Verification approach
-Since most of Tier 1+ is currently exercised through `UseMockData`, each feature should be built and demoed against `MockData.cs` first (fast iteration, no login needed), the same way Compose/reply/star/delete were validated in the current build. Backend-touching pieces (Tier 0, and any Tier 1+ feature once wired to real `DomBridge` calls) need a live-login pass per the "Known open risk" section of `PLAN.md` before being trusted.
+Since most of Tier 1+ is currently exercised through `UseMockData` (now `_mail is null`), each feature should be built and demoed against `MockData.cs` first (fast iteration, no login needed), the same way Compose/reply/star/delete were validated in the current build. Backend-touching pieces need a live-login pass per `PLAN.md`'s "Known open items" before being trusted.

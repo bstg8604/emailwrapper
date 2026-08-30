@@ -16,9 +16,15 @@ namespace EmailClient.Mail;
 /// surface (<c>ListFoldersAsync</c>, <c>SetFlaggedAsync</c>, etc.) so <c>MainWindow</c>'s call
 /// sites barely changed shape — only what answers them did.
 ///
-/// One IMAP connection is held open and reused for the app's lifetime (a second, idle connection
-/// would need its own login and doubles server-side session usage for no benefit); a dedicated
-/// SMTP connection is opened per send, since sends are infrequent and short-lived.
+/// One IMAP connection (<see cref="_imap"/>) is held open and reused for the app's lifetime for
+/// every command (list/fetch/move/etc.); a dedicated SMTP connection is opened per send, since
+/// sends are infrequent and short-lived.
+///
+/// A second, read-only connection (<see cref="_idleClient"/>) is opened solely to sit in IMAP IDLE
+/// on the current mailbox — IDLE occupies a connection for as long as it's active, so it can't
+/// share the command connection above without every other method first having to interrupt it.
+/// A second lightweight login is a small, worthwhile trade for real push instead of polling every
+/// 60 seconds for new mail.
 /// </summary>
 public sealed class ImapMailBackend : IAsyncDisposable
 {
@@ -31,6 +37,124 @@ public sealed class ImapMailBackend : IAsyncDisposable
     private string _currentMailbox = "INBOX";
     private int _page = 1;
     private const int PageSize = 50;
+
+    // ---- IMAP IDLE (push new-mail notifications) -------------------------------------------
+    private ImapClient? _idleClient;
+    private CancellationTokenSource? _idleCts;
+    private Task? _idleLoopTask;
+
+    /// <summary>Raised (on a background thread — marshal to the UI thread before touching
+    /// controls) whenever the watched mailbox's message count changes: a new arrival or an
+    /// expunge the server told us about without being asked.</summary>
+    public event Action? MailboxActivity;
+
+    /// <summary>
+    /// Starts (or restarts, if already running against a different mailbox) a background IDLE loop
+    /// watching <paramref name="mailbox"/>. Safe to call repeatedly — e.g. every time the user
+    /// switches folders — since it always tears down any previous loop first.
+    /// </summary>
+    public void StartIdleMonitor(string mailbox)
+    {
+        StopIdleMonitor();
+        _idleCts = new CancellationTokenSource();
+        _idleLoopTask = RunIdleLoopAsync(mailbox, _idleCts.Token);
+    }
+
+    public void StopIdleMonitor()
+    {
+        _idleCts?.Cancel();
+        _idleCts?.Dispose();
+        _idleCts = null;
+    }
+
+    // If the server won't allow this second connection at all (a hard per-account session cap is
+    // common on university mail servers), retrying forever would mean re-authenticating with the
+    // real password every 30 seconds indefinitely — enough repeated login attempts to trip a mail
+    // server's own brute-force lockout. Give up on IDLE for this session after a few tries in a
+    // row; the 60-second poll timer still covers new mail without it.
+    private const int MaxConsecutiveIdleFailures = 3;
+
+    private async Task RunIdleLoopAsync(string mailbox, CancellationToken token)
+    {
+        var consecutiveFailures = 0;
+        while (!token.IsCancellationRequested && consecutiveFailures < MaxConsecutiveIdleFailures)
+        {
+            ImapClient? client = null;
+            try
+            {
+                client = new ImapClient();
+                await client.ConnectAsync(_account.ImapHost, _account.ImapPort, SecureSocketOptions.SslOnConnect, token);
+                await client.AuthenticateAsync(_account.LoginName, _account.Password, token);
+                var folder = await client.GetFolderAsync(mailbox, token) ?? client.Inbox;
+                await folder.OpenAsync(FolderAccess.ReadOnly, token);
+                _idleClient = client;
+
+                // Reached IDLE at all, so the connection/login/open sequence genuinely works —
+                // resets the breaker so a later transient blip doesn't inherit an unrelated streak.
+                consecutiveFailures = 0;
+
+                void OnCountChanged(object? s, EventArgs e) => MailboxActivity?.Invoke();
+                folder.CountChanged += OnCountChanged;
+                try
+                {
+                    // A real IDLE command times out server-side after ~30 minutes of inactivity;
+                    // re-issuing it every 9 minutes (MailKit's own documented example uses the same
+                    // figure) keeps well clear of that regardless of server policy.
+                    while (!token.IsCancellationRequested)
+                    {
+                        using var doneSource = new CancellationTokenSource(TimeSpan.FromMinutes(9));
+                        try
+                        {
+                            await client.IdleAsync(doneSource.Token, token);
+                        }
+                        catch (OperationCanceledException) when (!token.IsCancellationRequested)
+                        {
+                            // Just the periodic re-issue timing out — loop around and idle again.
+                        }
+                    }
+                }
+                finally
+                {
+                    folder.CountChanged -= OnCountChanged;
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // Requested shutdown (folder switch or sign-out) — exit quietly.
+            }
+            catch (Exception)
+            {
+                // Transient failure (network blip, server hiccup, or the server just doesn't allow
+                // a second session) — back off and reconnect rather than letting the whole loop
+                // die immediately; the 60-second poll timer still covers new mail regardless. But
+                // give up for good once MaxConsecutiveIdleFailures is hit (see its own comment).
+                consecutiveFailures++;
+                if (consecutiveFailures >= MaxConsecutiveIdleFailures)
+                    break;
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(30), token);
+                }
+                catch (OperationCanceledException)
+                {
+                }
+            }
+            finally
+            {
+                try
+                {
+                    if (client is { IsConnected: true })
+                        await client.DisconnectAsync(true);
+                }
+                catch (Exception)
+                {
+                }
+                client?.Dispose();
+                if (ReferenceEquals(_idleClient, client))
+                    _idleClient = null;
+            }
+        }
+    }
 
     // Caches the last opened message so downloading one of its attachments doesn't need a second
     // round trip to re-fetch the whole thing.
@@ -51,7 +175,7 @@ public sealed class ImapMailBackend : IAsyncDisposable
         // "wrong email or password" message for AuthenticationException. Wrapping it into
         // SessionExpiredException made every rejected password show "you've been signed out"
         // instead, which is wrong on a first sign-in attempt (there was never a session to expire).
-        await _imap.AuthenticateAsync(_account.Email, _account.Password);
+        await _imap.AuthenticateAsync(_account.LoginName, _account.Password);
 
         await IndexFoldersAsync();
 
@@ -60,9 +184,14 @@ public sealed class ImapMailBackend : IAsyncDisposable
         _current = inbox;
         _currentMailbox = inbox.FullName;
 
-        // Fire-and-forget: contacts are a "nice to have" for autocomplete, not something the rest
-        // of the app should wait on before it's usable.
-        _ = _contacts.BuildAsync(_imap, _account.Email);
+        // Must be awaited, not fire-and-forget: MailKit's ImapClient can't run two commands
+        // concurrently on the same connection, and every caller of ConnectAsync immediately issues
+        // more commands on this same _imap right after this method returns (loading folders,
+        // listing messages). Firing this in the background used to race those and surface as a
+        // confusing "the ImapClient is busy" failure on the very first refresh after signing in —
+        // one that also left the message list showing whatever was there before (stale sample
+        // data) since the exception aborted the refresh before it could clear it.
+        await _contacts.BuildAsync(_imap, _account.Email);
     }
 
     private async Task IndexFoldersAsync()
@@ -239,7 +368,25 @@ public sealed class ImapMailBackend : IAsyncDisposable
     private async Task EnsureConnectedAsync()
     {
         if (_imap.IsConnected && _imap.IsAuthenticated)
-            return;
+        {
+            // The connection itself can survive while the selected mailbox doesn't — a server-side
+            // deselect that isn't a full disconnect. Reopening here (rather than only reconnecting
+            // from scratch below) catches that case too, instead of every subsequent command
+            // failing with "the folder is not currently open" until the app is restarted.
+            if (_current is { IsOpen: false } stale)
+            {
+                try
+                {
+                    await stale.OpenAsync(FolderAccess.ReadWrite);
+                }
+                catch (Exception)
+                {
+                    // Falls through to the full reconnect path below.
+                }
+            }
+            if (_current?.IsOpen != false)
+                return;
+        }
 
         var wantedMailbox = _currentMailbox;
         try
@@ -303,10 +450,45 @@ public sealed class ImapMailBackend : IAsyncDisposable
     }
 
     /// <summary>
-    /// Searches the whole current folder server-side (subject/body/from/to) — not just whatever
-    /// page happens to be loaded — using real IMAP SEARCH rather than the client-side substring
-    /// filter over the loaded page that quick-narrows within it. Results are capped and newest
-    /// first, the same as the normal page view.
+    /// Every other message in the current folder that belongs to the same conversation — the whole
+    /// folder, not just whatever page happens to be loaded. Apple Mail threads a reply from months
+    /// ago into a conversation even if it isn't on the currently visible page, and a client that
+    /// only ever looks at the loaded 50 rows would silently fail to thread anything older than that.
+    /// Envelope-only fetch (no body octets) keeps this cheap even for a large folder, matching
+    /// SearchAsync's own approach.
+    /// </summary>
+    public async Task<IReadOnlyList<InboxRow>> FindConversationSiblingsAsync(string conversationKey, string excludeId, int max = 8)
+    {
+        await EnsureConnectedAsync();
+        if (_current is null || string.IsNullOrWhiteSpace(conversationKey))
+            return [];
+
+        var total = _current.Count;
+        if (total == 0)
+            return [];
+
+        var envelopes = await _current.FetchAsync(0, total - 1,
+            MessageSummaryItems.Envelope | MessageSummaryItems.Flags | MessageSummaryItems.UniqueId |
+            MessageSummaryItems.InternalDate | MessageSummaryItems.BodyStructure);
+
+        return envelopes
+            .Select(ToRow)
+            .Where(r => r.Id != excludeId && r.ConversationKey == conversationKey)
+            .OrderByDescending(r => r.Timestamp ?? DateTime.MinValue)
+            .Take(max)
+            .ToList();
+    }
+
+    /// <summary>
+    /// Searches the whole current folder — not just whatever page happens to be loaded.
+    ///
+    /// Subject/From/To are matched with a real substring compare against envelopes fetched for the
+    /// entire folder, rather than trusting the server's own SEARCH SUBJECT/FROM/TO: many IMAP
+    /// servers index those by whole word, not raw substring, so searching "hel" would never match
+    /// "hello" server-side even though every desktop/browser Ctrl+F treats that as a match. Message
+    /// bodies are too expensive to fetch in full just to substring-match client-side, so those still
+    /// go through the server's own (word-indexed) SEARCH BODY — a real but narrower limitation than
+    /// subject/sender search having the same gap would be.
     /// </summary>
     public async Task<IReadOnlyList<InboxRow>> SearchAsync(string query, int maxResults = 300)
     {
@@ -314,17 +496,37 @@ public sealed class ImapMailBackend : IAsyncDisposable
         if (_current is null || string.IsNullOrWhiteSpace(query))
             return [];
 
-        var terms = SearchQuery.Or(
-            SearchQuery.Or(SearchQuery.SubjectContains(query), SearchQuery.BodyContains(query)),
-            SearchQuery.Or(SearchQuery.FromContains(query), SearchQuery.ToContains(query)));
+        var total = _current.Count;
+        var uids = new HashSet<UniqueId>();
 
-        var uids = await _current.SearchAsync(terms);
+        if (total > 0)
+        {
+            var envelopes = await _current.FetchAsync(0, total - 1,
+                MessageSummaryItems.Envelope | MessageSummaryItems.UniqueId);
+            foreach (var summary in envelopes)
+            {
+                if (EnvelopeMatches(summary.Envelope, query))
+                    uids.Add(summary.UniqueId);
+            }
+        }
+
+        try
+        {
+            foreach (var uid in await _current.SearchAsync(SearchQuery.BodyContains(query)))
+                uids.Add(uid);
+        }
+        catch (Exception)
+        {
+            // Body search is a bonus on top of the subject/from/to substring match above, which
+            // already covers the common case — not worth failing the whole search over.
+        }
+
         if (uids.Count == 0)
             return [];
 
         // Newest matches matter most when a folder has far more hits than are worth showing —
-        // IMAP UIDs increase with arrival order, so the tail of the list is the most recent.
-        var take = uids.Count > maxResults ? uids.Skip(uids.Count - maxResults).ToList() : uids;
+        // IMAP UIDs increase with arrival order, so the highest-numbered ones are the most recent.
+        var take = uids.Count > maxResults ? uids.OrderByDescending(u => u.Id).Take(maxResults).ToList() : uids.ToList();
 
         var summaries = await _current.FetchAsync(take,
             MessageSummaryItems.Envelope | MessageSummaryItems.Flags | MessageSummaryItems.UniqueId |
@@ -335,6 +537,24 @@ public sealed class ImapMailBackend : IAsyncDisposable
             .Select(ToRow)
             .ToList();
     }
+
+    private static bool EnvelopeMatches(Envelope? envelope, string query)
+    {
+        if (envelope is null)
+            return false;
+
+        if (envelope.Subject?.Contains(query, StringComparison.OrdinalIgnoreCase) == true)
+            return true;
+
+        return AddressListMatches(envelope.From, query)
+            || AddressListMatches(envelope.To, query)
+            || AddressListMatches(envelope.Cc, query);
+    }
+
+    private static bool AddressListMatches(InternetAddressList? list, string query) =>
+        list?.Mailboxes.Any(m =>
+            m.Name?.Contains(query, StringComparison.OrdinalIgnoreCase) == true
+            || m.Address.Contains(query, StringComparison.OrdinalIgnoreCase)) == true;
 
     private static InboxRow ToRow(IMessageSummary summary)
     {
@@ -351,7 +571,8 @@ public sealed class ImapMailBackend : IAsyncDisposable
             Unread: !(summary.Flags?.HasFlag(MessageFlags.Seen) ?? false),
             Starred: summary.Flags?.HasFlag(MessageFlags.Flagged) ?? false,
             HasAttachment: HasAttachments(summary.Body),
-            Timestamp: when);
+            Timestamp: when,
+            SenderAddress: from?.Address ?? "");
     }
 
     private static bool HasAttachments(BodyPart? part) => part switch
@@ -379,10 +600,36 @@ public sealed class ImapMailBackend : IAsyncDisposable
 
     // ---- Reading -------------------------------------------------------------------------------
 
+    /// <summary>Raw RFC 822 source of a message — the same "View source" real mail clients (and
+    /// Thunderbird's Ctrl+U) offer, and genuinely the fastest way to diagnose a message that isn't
+    /// rendering the way it should: seeing the exact MIME structure the server actually sent.</summary>
+    public async Task<string?> GetRawSourceAsync(string id)
+    {
+        if (_current is null || !uint.TryParse(id, out var idValue))
+            return null;
+        await EnsureConnectedAsync();
+        var uid = new UniqueId(idValue);
+
+        try
+        {
+            var message = _cachedUid == uid && _cachedMessage is not null
+                ? _cachedMessage
+                : await _current.GetMessageAsync(uid);
+            using var stream = new MemoryStream();
+            message.WriteTo(stream);
+            return System.Text.Encoding.UTF8.GetString(stream.ToArray());
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
     public async Task<MessageDetail?> OpenMessageAsync(string id)
     {
         if (_current is null || !uint.TryParse(id, out var idValue))
             return null;
+        await EnsureConnectedAsync();
         var uid = new UniqueId(idValue);
 
         MimeMessage message;
@@ -397,7 +644,11 @@ public sealed class ImapMailBackend : IAsyncDisposable
 
         _cachedUid = uid;
         _cachedMessage = message;
+        return BuildMessageDetail(message, uid);
+    }
 
+    private static MessageDetail BuildMessageDetail(MimeMessage message, UniqueId uid)
+    {
         var attachments = new List<MailAttachment>();
         var index = 0;
         foreach (var part in message.Attachments.OfType<MimePart>())
@@ -410,10 +661,9 @@ public sealed class ImapMailBackend : IAsyncDisposable
             index++;
         }
 
-        var bodyHtml = message.HtmlBody
-            ?? (message.TextBody is { } text
-                ? $"<p>{System.Net.WebUtility.HtmlEncode(text).Replace("\n", "<br/>")}</p>"
-                : "<p>(This message has no readable body.)</p>");
+        var bodyHtml = (message.Body is not null ? ExtractBodyHtml(message.Body) : null)
+            ?? "<p>(This message has no readable body.)</p>";
+        bodyHtml = ResolveEmbeddedImages(message, bodyHtml);
 
         return new MessageDetail(
             message.Subject ?? "(no subject)",
@@ -422,7 +672,133 @@ public sealed class ImapMailBackend : IAsyncDisposable
             bodyHtml,
             To: message.To.ToString(),
             Cc: message.Cc.ToString(),
-            Attachments: attachments);
+            Attachments: attachments,
+            Calendar: TryParseCalendarInvite(message),
+            Timestamp: message.Date.LocalDateTime);
+    }
+
+    /// <summary>
+    /// MimeMessage.HtmlBody/TextBody return null/wrong-part for a real, common structure: a mailing
+    /// list (Mailman etc.) wrapping the actual message in multipart/mixed alongside its own
+    /// plain-text disclaimer banner and unsubscribe footer, e.g.
+    /// mixed(text/plain disclaimer, multipart/alternative(text/plain, text/html), text/plain footer).
+    /// Confirmed directly against MimeKit: HtmlBody returns null for that shape, and TextBody
+    /// returns only the *first* text/plain leaf (the disclaimer) — silently dropping the real
+    /// message and the footer. This walks the whole tree instead: multipart/alternative picks its
+    /// richest resolvable child (last non-null, since alternatives are ordered plain-to-rich);
+    /// every other multipart (mixed, related, ...) concatenates all of its children in order, since
+    /// each one is separate content, not an alternative of the others.
+    /// </summary>
+    private static string? ExtractBodyHtml(MimeEntity entity)
+    {
+        if (entity is MimePart mimePart && mimePart.IsAttachment)
+            return null;
+
+        if (entity is Multipart multipart)
+        {
+            if (multipart.ContentType.MimeType.Equals("multipart/alternative", StringComparison.OrdinalIgnoreCase))
+            {
+                string? best = null;
+                foreach (var child in multipart)
+                {
+                    if (ExtractBodyHtml(child) is { } resolved)
+                        best = resolved;
+                }
+                return best;
+            }
+
+            var sb = new System.Text.StringBuilder();
+            foreach (var child in multipart)
+            {
+                if (ExtractBodyHtml(child) is { } resolved)
+                    sb.Append(resolved);
+            }
+            return sb.Length > 0 ? sb.ToString() : null;
+        }
+
+        if (entity is TextPart text)
+        {
+            return text.IsHtml
+                ? text.Text
+                : $"<p>{System.Net.WebUtility.HtmlEncode(text.Text).Replace("\n", "<br/>")}</p>";
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// A "cid:xyz" src is how HTML mail references an image embedded in the message itself (a
+    /// signature logo, an inline photo) rather than fetched over the network — no browser or
+    /// WebView2 knows what to do with that scheme on its own, and HtmlSanitizer strips it outright
+    /// since it isn't http(s)/data. Replacing it with the actual embedded bytes as a data: URI is
+    /// what turns "src stripped, image just missing" into the image actually rendering.
+    /// </summary>
+    private static string ResolveEmbeddedImages(MimeMessage message, string html)
+    {
+        if (!html.Contains("cid:", StringComparison.OrdinalIgnoreCase))
+            return html;
+
+        foreach (var part in message.BodyParts.OfType<MimePart>())
+        {
+            if (string.IsNullOrEmpty(part.ContentId) || part.Content is null)
+                continue;
+
+            try
+            {
+                using var stream = new MemoryStream();
+                part.Content.DecodeTo(stream);
+                var dataUri = $"data:{part.ContentType.MimeType};base64,{Convert.ToBase64String(stream.ToArray())}";
+                html = html.Replace($"cid:{part.ContentId}", dataUri, StringComparison.OrdinalIgnoreCase);
+            }
+            catch (Exception)
+            {
+                // Best-effort — one unreadable embedded part shouldn't block the rest of the body.
+            }
+        }
+        return html;
+    }
+
+    /// <summary>
+    /// A calendar invite (Outlook, Google Calendar, Zoom's own scheduling mail — all of them send
+    /// the same RFC 5545 text/calendar part) carries real structured data: an exact start time, a
+    /// location, sometimes the join link in its description. Parsed with Ical.Net rather than
+    /// guessing a day/time out of the visible body text, which is all a plain message offers.
+    /// </summary>
+    private static CalendarInvite? TryParseCalendarInvite(MimeMessage message)
+    {
+        var calendarPart = message.BodyParts.OfType<MimePart>()
+            .FirstOrDefault(p => p.ContentType.MimeType.Equals("text/calendar", StringComparison.OrdinalIgnoreCase));
+        if (calendarPart?.Content is null)
+            return null;
+
+        try
+        {
+            using var stream = new MemoryStream();
+            calendarPart.Content.DecodeTo(stream);
+            stream.Position = 0;
+            using var reader = new StreamReader(stream);
+            var calendar = Ical.Net.Calendar.Load(reader.ReadToEnd());
+            var ev = calendar?.Events?.FirstOrDefault();
+            if (ev is null)
+                return null;
+
+            var text = $"{ev.Description} {ev.Location}";
+            var joinUrl = MeetingLinkFinder.FindUrl(text);
+
+            DateTimeOffset? start = ev.Start is { } dt ? new DateTimeOffset(dt.AsUtc, TimeSpan.Zero) : null;
+
+            return new CalendarInvite(
+                string.IsNullOrWhiteSpace(ev.Summary) ? "Meeting" : ev.Summary,
+                start,
+                string.IsNullOrWhiteSpace(ev.Location) ? null : ev.Location,
+                joinUrl);
+        }
+        catch (Exception)
+        {
+            // A malformed or unsupported .ics part shouldn't block the rest of the message from
+            // opening — it just means no meeting card.
+            return null;
+        }
     }
 
     // ---- Flags / move / delete ------------------------------------------------------------------
@@ -436,6 +812,7 @@ public sealed class ImapMailBackend : IAsyncDisposable
             return false;
         try
         {
+            await EnsureConnectedAsync();
             if (read)
                 await _current.AddFlagsAsync(uid, MessageFlags.Seen, silent: true);
             else
@@ -454,6 +831,7 @@ public sealed class ImapMailBackend : IAsyncDisposable
             return false;
         try
         {
+            await EnsureConnectedAsync();
             if (flagged)
                 await _current.AddFlagsAsync(uid, MessageFlags.Flagged, silent: true);
             else
@@ -476,6 +854,7 @@ public sealed class ImapMailBackend : IAsyncDisposable
                            // reverse the wrong (older) action instead of reporting "can't undo".
         if (_current is null || TryUid(id) is not { } uid)
             return false;
+        await EnsureConnectedAsync();
 
         var trash = await ResolveSpecialAsync("Trash");
         if (trash is not null && trash.FullName != _current.FullName)
@@ -499,6 +878,7 @@ public sealed class ImapMailBackend : IAsyncDisposable
         _lastMove = null;
         if (TryUid(id) is not { } uid)
             return false;
+        await EnsureConnectedAsync();
         var archive = await ResolveSpecialAsync("Archive");
         return archive is not null && await MoveUidAsync(uid, archive);
     }
@@ -508,6 +888,7 @@ public sealed class ImapMailBackend : IAsyncDisposable
         _lastMove = null;
         if (TryUid(id) is not { } uid || !_foldersByMailbox.TryGetValue(mailbox, out var target))
             return false;
+        await EnsureConnectedAsync();
         return await MoveUidAsync(uid, target);
     }
 
@@ -655,7 +1036,7 @@ public sealed class ImapMailBackend : IAsyncDisposable
             ? SecureSocketOptions.SslOnConnect
             : SecureSocketOptions.StartTls;
         await smtp.ConnectAsync(_account.SmtpHost, _account.SmtpPort, options);
-        await smtp.AuthenticateAsync(_account.Email, _account.Password);
+        await smtp.AuthenticateAsync(_account.LoginName, _account.Password);
         await smtp.SendAsync(message);
         await smtp.DisconnectAsync(true);
 
@@ -787,6 +1168,17 @@ public sealed class ImapMailBackend : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        StopIdleMonitor();
+        try
+        {
+            if (_idleLoopTask is not null)
+                await _idleLoopTask;
+        }
+        catch (Exception)
+        {
+            // Best-effort — the process is going away regardless.
+        }
+
         try
         {
             if (_imap.IsConnected)

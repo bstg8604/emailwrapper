@@ -315,20 +315,29 @@
                                     <ColumnDefinition Width="16"/>
                                     <ColumnDefinition Width="*"/>
                                 </Grid.ColumnDefinitions>
+                                <!-- IITB's IMAP/SMTP login is the LDAP id, not the email address
+                                     (see cc.iitb.ac.in/page/configurewebmail) — kept separate from
+                                     Email below, which is still what mail gets sent From/shown as.
+                                     Left blank, sign-in falls back to using Email as the username,
+                                     so this doesn't break a server that does accept the full address. -->
                                 <StackPanel Grid.Column="0">
+                                    <TextBlock x:Name="UsernameLabel" Text="LDAP ID" Style="{StaticResource Label}"/>
+                                    <TextBox x:Name="UsernameBox" Style="{StaticResource ThemeDialogField}"
+                                             KeyDown="EmailBox_KeyDown" AutomationProperties.Name="Username"/>
+                                </StackPanel>
+                                <StackPanel Grid.Column="2">
                                     <TextBlock Text="Email" Style="{StaticResource Label}"/>
                                     <TextBox x:Name="EmailBox" Style="{StaticResource ThemeDialogField}" Text="@iitb.ac.in"
                                              KeyDown="EmailBox_KeyDown" AutomationProperties.Name="Email"/>
                                 </StackPanel>
-                                <!-- Optional — how you show up to recipients. AccountSettings.DisplayName
-                                     existed already but nothing in this dialog ever let anyone set it, so it
-                                     silently stayed blank for every account. -->
-                                <StackPanel Grid.Column="2">
-                                    <TextBlock Text="Display name (optional)" Style="{StaticResource Label}"/>
-                                    <TextBox x:Name="DisplayNameBox" Style="{StaticResource ThemeDialogField}"
-                                             KeyDown="EmailBox_KeyDown" AutomationProperties.Name="Display name"/>
-                                </StackPanel>
                             </Grid>
+
+                            <!-- Optional — how you show up to recipients. AccountSettings.DisplayName
+                                 existed already but nothing in this dialog ever let anyone set it, so it
+                                 silently stayed blank for every account. -->
+                            <TextBlock Text="Display name (optional)" Style="{StaticResource Label}"/>
+                            <TextBox x:Name="DisplayNameBox" Style="{StaticResource ThemeDialogField}"
+                                     KeyDown="EmailBox_KeyDown" AutomationProperties.Name="Display name"/>
 
                             <TextBlock Text="Password" Style="{StaticResource Label}"/>
                             <Grid>
@@ -365,7 +374,7 @@
                             <TextBlock x:Name="ErrorText" Foreground="#FFB91C1C" FontSize="12" Margin="0,2,0,10"
                                        TextWrapping="Wrap" Visibility="Collapsed"/>
 
-                            <TextBlock x:Name="AdvancedToggle" Text="Server settings" Foreground="#FF6D28D9" FontSize="12"
+                            <TextBlock x:Name="AdvancedToggle" Text="Not from IIT Bombay?" Foreground="#FF6D28D9" FontSize="12"
                                        Cursor="Hand" MouseLeftButtonUp="AdvancedToggle_Click" Margin="0,0,0,10"/>
 
                             <StackPanel x:Name="AdvancedPanel" Visibility="Collapsed">
@@ -401,7 +410,7 @@
                                                  AutomationProperties.Name="SMTP port"/>
                                     </StackPanel>
                                 </Grid>
-                                <TextBlock Text="These are best-guess defaults for IITB — check Thunderbird/Betterbird's account settings if sign-in or sending fails."
+                                <TextBlock Text="These default to IITB's servers — replace them with your own provider's IMAP/SMTP host, port and username if you're signing in from somewhere else."
                                            FontSize="11" Foreground="#FF9A9A9A" TextWrapping="Wrap" Margin="0,2,0,14"/>
                             </StackPanel>
 
@@ -488,10 +497,39 @@
                                                 </TextBlock>
                                             </Button>
                                             <Border Width="1" Height="16" Background="#FFE2E2E8" Margin="4,0" VerticalAlignment="Center"/>
+                                            <!-- Hovering an option previews it live in the editor, same as Compose's
+                                                 font picker — MouseEnter drives the preview, DropDownClosed cancels
+                                                 whatever's still only previewed if closed without a click. -->
+                                            <ComboBox x:Name="SigFontCombo" Width="90" Height="24" VerticalAlignment="Center" FontSize="11.5"
+                                                      Margin="0,0,4,0" SelectedIndex="0" SelectionChanged="SigFontCombo_SelectionChanged"
+                                                      DropDownClosed="SigFontCombo_DropDownClosed"
+                                                      AutomationProperties.Name="Font">
+                                                <ComboBoxItem Content="Segoe UI" Tag="Segoe UI, sans-serif" MouseEnter="SigFontComboItem_MouseEnter"/>
+                                                <ComboBoxItem Content="Arial" Tag="Arial, sans-serif" MouseEnter="SigFontComboItem_MouseEnter"/>
+                                                <ComboBoxItem Content="Helvetica" Tag="Helvetica, Arial, sans-serif" MouseEnter="SigFontComboItem_MouseEnter"/>
+                                                <ComboBoxItem Content="Calibri" Tag="Calibri, sans-serif" MouseEnter="SigFontComboItem_MouseEnter"/>
+                                                <ComboBoxItem Content="Georgia" Tag="Georgia, serif" MouseEnter="SigFontComboItem_MouseEnter"/>
+                                                <ComboBoxItem Content="Times New Roman" Tag="'Times New Roman', serif" MouseEnter="SigFontComboItem_MouseEnter"/>
+                                                <ComboBoxItem Content="Courier New" Tag="'Courier New', monospace" MouseEnter="SigFontComboItem_MouseEnter"/>
+                                                <ComboBoxItem Content="Verdana" Tag="Verdana, sans-serif" MouseEnter="SigFontComboItem_MouseEnter"/>
+                                            </ComboBox>
+                                            <ComboBox x:Name="SigSizeCombo" Width="52" Height="24" VerticalAlignment="Center" FontSize="11.5"
+                                                      Margin="0,0,4,0" SelectedIndex="3" SelectionChanged="SigSizeCombo_SelectionChanged"
+                                                      AutomationProperties.Name="Font size">
+                                                <ComboBoxItem Content="8"/>
+                                                <ComboBoxItem Content="9"/>
+                                                <ComboBoxItem Content="10"/>
+                                                <ComboBoxItem Content="11"/>
+                                                <ComboBoxItem Content="12"/>
+                                                <ComboBoxItem Content="14"/>
+                                                <ComboBoxItem Content="16"/>
+                                                <ComboBoxItem Content="18"/>
+                                                <ComboBoxItem Content="24"/>
+                                                <ComboBoxItem Content="36"/>
+                                            </ComboBox>
+                                            <Border Width="1" Height="16" Background="#FFE2E2E8" Margin="4,0" VerticalAlignment="Center"/>
                                             <!-- From here down, same order as Compose's toolbar: align, then colours,
-                                                 then lists, then link, then indent/quote, then clear formatting
-                                                 (Compose's font/size pickers and attach/insert-signature have no
-                                                 equivalent here, so they're simply not in the sequence). -->
+                                                 then lists, then link, then indent/quote, then clear formatting. -->
                                             <Button Style="{StaticResource SigFormatButton}" Click="AlignLeft_Click" ToolTip="Align left"
                                                     AutomationProperties.Name="Align left" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
                                                     Content="&#xE8E4;" FontSize="13"/>

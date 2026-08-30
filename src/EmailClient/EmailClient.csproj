@@ -8,11 +8,18 @@
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
     <ApplicationIcon>icon.ico</ApplicationIcon>
+    <AssemblyTitle>Purplemail</AssemblyTitle>
+    <Product>Purplemail</Product>
+    <Description>A desktop email client for IIT Bombay webmail (IMAP/SMTP).</Description>
+    <Version>1.0.0</Version>
+    <NeutralLanguage>en</NeutralLanguage>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="MailKit" Version="4.17.0" />
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4191.47" />
+    <PackageReference Include="HtmlSanitizer" Version="9.2.995" />
+    <PackageReference Include="Ical.Net" Version="5.2.3" />
   </ItemGroup>
 
   <ItemGroup>

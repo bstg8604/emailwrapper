@@ -252,20 +252,24 @@
             <Border Grid.Row="1" Margin="20,10,20,0" Background="White" CornerRadius="8"
                     BorderBrush="#FFE7E6EE" BorderThickness="1" Padding="14,4">
             <StackPanel>
-                <Grid Height="40">
+                <Grid MinHeight="40">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
-                    <TextBlock Text="To" Style="{StaticResource FieldLabel}"/>
+                    <TextBlock Text="To" Style="{StaticResource FieldLabel}" VerticalAlignment="Top" Margin="0,11,0,0"/>
+                    <!-- Wraps instead of scrolling off past the visible width — with a full To/Cc/Bcc
+                         list, a one-line field just hides most of the recipients from view; MinHeight
+                         above (not a fixed Height) is what lets this row actually grow to fit them. -->
                     <TextBox x:Name="ToBox" Grid.Column="1" Style="{StaticResource FieldBox}"
+                             TextWrapping="Wrap" AcceptsReturn="False" VerticalContentAlignment="Top" Padding="10,10,0,10"
                              AutomationProperties.Name="To"/>
                     <!-- Independent Cc/Bcc toggles (Gmail's convention) rather than one link that
                          reveals both — clicking "Cc" only brings Cc down; Bcc stays put until its
                          own link is clicked. Each link disappears once its field is revealed, since
                          there's no reason to hide it again mid-compose. -->
-                    <StackPanel Grid.Column="2" Orientation="Horizontal">
+                    <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Top" Margin="0,13,0,0">
                         <TextBlock x:Name="CcToggle" Text="Cc" Foreground="#FF9A9A9A" FontSize="12"
                                    VerticalAlignment="Center" Cursor="Hand" MouseLeftButtonUp="CcToggle_Click"/>
                         <TextBlock x:Name="ToggleSeparator" Text="/" Foreground="#FFD5D5D5" FontSize="12" Margin="4,0"
@@ -276,35 +280,37 @@
                 </Grid>
                 <Border Height="1" Background="#FFF0F0F0"/>
 
-                <Grid x:Name="CcRow" Height="40" Visibility="Collapsed">
+                <Grid x:Name="CcRow" MinHeight="40" Visibility="Collapsed">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
-                    <TextBlock Text="Cc" Style="{StaticResource FieldLabel}"/>
+                    <TextBlock Text="Cc" Style="{StaticResource FieldLabel}" VerticalAlignment="Top" Margin="0,11,0,0"/>
                     <TextBox x:Name="CcBox" Grid.Column="1" Style="{StaticResource FieldBox}"
+                             TextWrapping="Wrap" AcceptsReturn="False" VerticalContentAlignment="Top" Padding="10,10,0,10"
                              AutomationProperties.Name="Cc"/>
                     <!-- Revealing Cc/Bcc needs a way back — without this, the only undo is manually
                          clearing the text and living with an empty row taking up space forever. -->
                     <TextBlock Grid.Column="2" Text="&#xE711;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
-                               FontSize="10" Foreground="#FFB5B5B5" VerticalAlignment="Center" Cursor="Hand"
+                               FontSize="10" Foreground="#FFB5B5B5" VerticalAlignment="Top" Margin="0,13,0,0" Cursor="Hand"
                                ToolTip="Remove Cc" MouseLeftButtonUp="HideCc_Click"
                                AutomationProperties.Name="Remove Cc"/>
                 </Grid>
                 <Border x:Name="CcRowDivider" Height="1" Background="#FFF0F0F0" Visibility="Collapsed"/>
 
-                <Grid x:Name="BccRow" Height="40" Visibility="Collapsed">
+                <Grid x:Name="BccRow" MinHeight="40" Visibility="Collapsed">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
-                    <TextBlock Text="Bcc" Style="{StaticResource FieldLabel}"/>
+                    <TextBlock Text="Bcc" Style="{StaticResource FieldLabel}" VerticalAlignment="Top" Margin="0,11,0,0"/>
                     <TextBox x:Name="BccBox" Grid.Column="1" Style="{StaticResource FieldBox}"
+                             TextWrapping="Wrap" AcceptsReturn="False" VerticalContentAlignment="Top" Padding="10,10,0,10"
                              AutomationProperties.Name="Bcc"/>
                     <TextBlock Grid.Column="2" Text="&#xE711;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
-                               FontSize="10" Foreground="#FFB5B5B5" VerticalAlignment="Center" Cursor="Hand"
+                               FontSize="10" Foreground="#FFB5B5B5" VerticalAlignment="Top" Margin="0,13,0,0" Cursor="Hand"
                                ToolTip="Remove Bcc" MouseLeftButtonUp="HideBcc_Click"
                                AutomationProperties.Name="Remove Bcc"/>
                 </Grid>
@@ -371,16 +377,22 @@
 
                     <Border Tag="RichOnly" Style="{StaticResource ToolbarSeparator}"/>
 
+                    <!-- Hovering an option previews it live in the editor (the selected text actually
+                         switches font while the mouse is over that row) rather than just naming the
+                         font — MouseEnter on each item drives the preview, DropDownClosed cancels
+                         whatever's still only previewed if the dropdown closes without a click. -->
                     <ComboBox x:Name="FontCombo" Tag="RichOnly" Width="96" Height="26" VerticalAlignment="Center" FontSize="12"
                               Margin="0,0,4,0" SelectedIndex="0" SelectionChanged="FontCombo_SelectionChanged"
+                              DropDownClosed="FontCombo_DropDownClosed"
                               AutomationProperties.Name="Font">
-                        <ComboBoxItem Content="Segoe UI" Tag="Segoe UI, sans-serif"/>
-                        <ComboBoxItem Content="Arial" Tag="Arial, sans-serif"/>
-                        <ComboBoxItem Content="Calibri" Tag="Calibri, sans-serif"/>
-                        <ComboBoxItem Content="Georgia" Tag="Georgia, serif"/>
-                        <ComboBoxItem Content="Times New Roman" Tag="'Times New Roman', serif"/>
-                        <ComboBoxItem Content="Courier New" Tag="'Courier New', monospace"/>
-                        <ComboBoxItem Content="Verdana" Tag="Verdana, sans-serif"/>
+                        <ComboBoxItem Content="Segoe UI" Tag="Segoe UI, sans-serif" MouseEnter="FontComboItem_MouseEnter"/>
+                        <ComboBoxItem Content="Arial" Tag="Arial, sans-serif" MouseEnter="FontComboItem_MouseEnter"/>
+                        <ComboBoxItem Content="Helvetica" Tag="Helvetica, Arial, sans-serif" MouseEnter="FontComboItem_MouseEnter"/>
+                        <ComboBoxItem Content="Calibri" Tag="Calibri, sans-serif" MouseEnter="FontComboItem_MouseEnter"/>
+                        <ComboBoxItem Content="Georgia" Tag="Georgia, serif" MouseEnter="FontComboItem_MouseEnter"/>
+                        <ComboBoxItem Content="Times New Roman" Tag="'Times New Roman', serif" MouseEnter="FontComboItem_MouseEnter"/>
+                        <ComboBoxItem Content="Courier New" Tag="'Courier New', monospace" MouseEnter="FontComboItem_MouseEnter"/>
+                        <ComboBoxItem Content="Verdana" Tag="Verdana, sans-serif" MouseEnter="FontComboItem_MouseEnter"/>
                     </ComboBox>
 
                     <!-- Actual point sizes (the Google Docs/Word convention) rather than vague
@@ -457,6 +469,14 @@
                               AutomationProperties.Name="Insert signature">
                         <ComboBoxItem Content="Signature" IsEnabled="False"/>
                     </ComboBox>
+
+                    <!-- A dropdown only makes sense when there's actually a choice to make — with
+                         exactly one signature saved, this single button (named after that one
+                         signature, not the generic word "Signature") replaces the combo entirely and
+                         inserts it directly. RefreshSignatureControl toggles which of the two shows. -->
+                    <Button x:Name="SingleSignatureButton" Style="{StaticResource TextActionButton}"
+                            Margin="0,0,4,0" Visibility="Collapsed" Click="SingleSignatureButton_Click"
+                            AutomationProperties.Name="Insert signature"/>
 
                     <Border Tag="RichOnly" Style="{StaticResource ToolbarSeparator}"/>
 

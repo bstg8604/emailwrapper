@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text.RegularExpressions;
+using System.Linq;
 
 namespace EmailClient.Automation;
 
@@ -87,6 +88,42 @@ public static class MailText
     }
 
     /// <summary>
+    /// Normalizes a comma-separated recipient list for display: an address that already carries a
+    /// display name is left as "Name &lt;email&gt;"; a bare address is shown as-is (just the email),
+    /// matching Gmail/Outlook's own convention rather than inventing punctuation around it.
+    /// </summary>
+    public static string FormatRecipientList(string recipients)
+    {
+        if (string.IsNullOrWhiteSpace(recipients))
+            return "";
+
+        return string.Join(", ", recipients.Split(',')
+            .Select(r => r.Trim())
+            .Where(r => r.Length > 0));
+    }
+
+    /// <summary>
+    /// Splits a comma-separated recipient list into what should be shown outright versus collapsed
+    /// behind an "and N more" — for a caller (the reading pane) that wants to build a clickable
+    /// toggle that actually expands to reveal the rest, rather than a dead-end summary with no way
+    /// to see who else was on the list.
+    /// </summary>
+    public static (List<string> Shown, List<string> Hidden) SplitRecipients(string recipients, int maxShown = 4)
+    {
+        if (string.IsNullOrWhiteSpace(recipients))
+            return ([], []);
+
+        var all = recipients.Split(',')
+            .Select(r => r.Trim())
+            .Where(r => r.Length > 0)
+            .ToList();
+
+        return all.Count <= maxShown
+            ? (all, [])
+            : (all.Take(maxShown).ToList(), all.Skip(maxShown).ToList());
+    }
+
+    /// <summary>
     /// Merges recipient lists for reply-all, dropping duplicates and anyone in
     /// <paramref name="exclude"/> — the user themselves, and the original sender who has already
     /// been promoted to the To line. Without this, reply-all copies you on your own message.
@@ -132,7 +169,20 @@ public static class MailText
         return when.Year == today.Year ? when.ToString("d MMM") : when.ToString("d MMM yyyy");
     }
 
-    /// <summary>Fuller date for the reading pane header and quote attribution lines.</summary>
+    /// <summary>
+    /// Always an absolute date, never "Today"/"Yesterday" — for anywhere that date gets baked into
+    /// permanent text (a reply/forward's quote attribution, a forwarded message's "Date:" line).
+    /// Relative wording there would freeze at whatever it said when composed and read wrong forever
+    /// after — Gmail, Outlook and Apple Mail all use an absolute date in a quote attribution for
+    /// exactly this reason, even though their own reading-pane headers use relative wording.
+    /// </summary>
+    public static string FormatAbsoluteDate(DateTime when) => when.Year == DateTime.Today.Year
+        ? when.ToString("ddd, d MMM, h:mm tt")
+        : when.ToString("ddd, d MMM yyyy, h:mm tt");
+
+    /// <summary>Fuller date for the reading pane header — relative wording is fine here since it's
+    /// only ever shown live, never baked into text that outlives "today"/"yesterday" meaning
+    /// anything (see <see cref="FormatAbsoluteDate"/> for that case).</summary>
     public static string FormatDetailDate(DateTime when)
     {
         var today = DateTime.Today;

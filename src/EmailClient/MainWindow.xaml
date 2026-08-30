@@ -465,7 +465,13 @@
 
                 <ListBox Grid.Row="1" x:Name="MessageList" BorderThickness="0"
                          ScrollViewer.HorizontalScrollBarVisibility="Disabled"
-                         VirtualizingPanel.IsVirtualizing="False"
+                         ScrollViewer.CanContentScroll="True"
+                         VirtualizingPanel.IsVirtualizing="True"
+                         VirtualizingPanel.ScrollUnit="Pixel"
+                         VirtualizingPanel.VirtualizationMode="Recycling"
+                         VirtualizingPanel.CacheLengthUnit="Page"
+                         VirtualizingPanel.CacheLength="2,2"
+                         VirtualizingPanel.IsContainerVirtualizable="True"
                          SelectionChanged="MessageList_SelectionChanged"
                          KeyDown="MessageList_KeyDown">
                     <ListBox.ItemTemplate>
@@ -553,29 +559,25 @@
                                                      Visibility="{Binding Unread, Converter={StaticResource BoolToVis}}"/>
                                             <TextBlock Text="{Binding Sender}" FontSize="12" Foreground="#FF6B6B6B"
                                                        FontWeight="{Binding Unread, Converter={StaticResource UnreadWeight}}"/>
+                                            <Border Background="#FFFBE9D0" CornerRadius="3" Padding="4,0" Margin="6,0,0,0"
+                                                    VerticalAlignment="Center" ToolTip="This sender is outside your organization"
+                                                    Visibility="{Binding IsExternalSender, Converter={StaticResource BoolToVis}}">
+                                                <TextBlock Text="External" FontSize="9" FontWeight="SemiBold" Foreground="#FFB06A00"/>
+                                            </Border>
                                         </StackPanel>
                                         <StackPanel Grid.Column="1" Orientation="Horizontal">
-                                            <TextBlock Text="&#xE723;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="10"
-                                                       Foreground="#FFAAAAAA" Margin="0,0,5,0" VerticalAlignment="Center"
-                                                       Visibility="{Binding HasAttachment, Converter={StaticResource BoolToVis}}"/>
+                                            <Border Background="{StaticResource ThemeAccentSoft}" CornerRadius="9" Width="18" Height="18"
+                                                    Margin="0,0,6,0" VerticalAlignment="Center" ToolTip="Has attachment"
+                                                    Visibility="{Binding HasAttachment, Converter={StaticResource BoolToVis}}">
+                                                <TextBlock Text="&#xE723;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="11"
+                                                           Foreground="{StaticResource ThemeAccentDeep}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                            </Border>
                                             <TextBlock Text="{Binding Date}" Foreground="#FF9A9A9A" FontSize="11"/>
                                         </StackPanel>
                                     </Grid>
-                                    <Grid Margin="0,3,0,0">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="Auto"/>
-                                            <ColumnDefinition Width="*"/>
-                                        </Grid.ColumnDefinitions>
-                                        <Border Grid.Column="0" Background="#FFEFE9FA" CornerRadius="4" Padding="5,1" Margin="0,0,6,0"
-                                                VerticalAlignment="Center"
-                                                Visibility="{Binding HasCourseCode, Converter={StaticResource BoolToVis}}">
-                                            <TextBlock Text="{Binding CourseCode}" FontSize="9.5" FontWeight="SemiBold"
-                                                       Foreground="{StaticResource ThemeAccentDeep}"/>
-                                        </Border>
-                                        <TextBlock Grid.Column="1" Text="{Binding Subject}" FontSize="13" Foreground="#FF262626"
-                                                   TextTrimming="CharacterEllipsis"
-                                                   FontWeight="{Binding Unread, Converter={StaticResource UnreadWeight}}"/>
-                                    </Grid>
+                                    <TextBlock Margin="0,3,0,0" Text="{Binding Subject}" FontSize="13" Foreground="#FF262626"
+                                               TextTrimming="CharacterEllipsis"
+                                               FontWeight="{Binding Unread, Converter={StaticResource UnreadWeight}}"/>
                                     <TextBlock Text="{Binding Snippet}" FontSize="11" Foreground="#FFAAAAAA"
                                                Margin="0,2,0,0" TextTrimming="CharacterEllipsis"/>
                                 </StackPanel>
@@ -672,6 +674,8 @@
                                     <Button Content="&#xE7B8;" Style="{StaticResource IconButton}" ToolTip="Archive" AutomationProperties.Name="Archive" Click="ArchiveButton_Click"/>
                                     <Button x:Name="MoveButton" Content="&#xE8DE;" Style="{StaticResource IconButton}" ToolTip="Move to folder…" AutomationProperties.Name="Move to folder" Click="MoveButton_Click"/>
                                     <Border Width="1" Height="18" Background="#FFEAEAEA" Margin="6,0" VerticalAlignment="Center"/>
+                                    <Button Content="&#xE8A5;" Style="{StaticResource IconButton}" ToolTip="View source" AutomationProperties.Name="View message source" Click="ViewSourceButton_Click"/>
+                                    <Border Width="1" Height="18" Background="#FFEAEAEA" Margin="6,0" VerticalAlignment="Center"/>
                                     <Button Content="&#xE74D;" Style="{StaticResource IconButton}" ToolTip="Delete" AutomationProperties.Name="Delete" Click="DeleteButton_Click"/>
                                 </StackPanel>
                             </Grid>
@@ -709,6 +713,38 @@
                                 </StackPanel>
                             </Border>
 
+                            <!-- A Zoom/Meet/Teams link found in the body — surfaced as an actual
+                                 meeting card (platform, title, and date/time pulled from the
+                                 surrounding text) the way Gmail promotes a calendar invite to the
+                                 top, instead of just saying "this message contains a link". -->
+                            <Border x:Name="MeetingBar" Background="#FFE9F7EF" CornerRadius="8"
+                                    Margin="24,10,24,0" Padding="12,10" Visibility="Collapsed">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Border Grid.Column="0" Width="34" Height="34" CornerRadius="8" Margin="0,0,10,0"
+                                            Background="{StaticResource ThemeAccent}" VerticalAlignment="Center">
+                                        <TextBlock x:Name="MeetingBarIcon" Text="&#xE787;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                                                   FontSize="15" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                    </Border>
+                                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                        <TextBlock x:Name="MeetingBarTitle" Text="Meeting" FontSize="13" FontWeight="SemiBold"
+                                                   Foreground="#FF1F3D2C" TextTrimming="CharacterEllipsis"/>
+                                        <TextBlock x:Name="MeetingBarSubtext" Text="Zoom meeting" FontSize="11.5"
+                                                   Foreground="#FF4F7A5F" Margin="0,2,0,0"/>
+                                    </StackPanel>
+                                    <Button x:Name="JoinMeetingButton" Grid.Column="2" Click="JoinMeetingButton_Click" Cursor="Hand" VerticalAlignment="Center"
+                                            Background="Transparent" BorderThickness="0" Padding="0">
+                                        <Border Background="{StaticResource ThemeAccent}" CornerRadius="6" Padding="14,7">
+                                            <TextBlock Text="Join" FontSize="12" FontWeight="SemiBold" Foreground="White"/>
+                                        </Border>
+                                    </Button>
+                                </Grid>
+                            </Border>
+
                             <Border x:Name="ImagesBlockedBar" Background="#FFFDF6E3" CornerRadius="6"
                                     Margin="24,10,24,0" Padding="10,6" Visibility="Collapsed">
                                 <Grid>
@@ -726,7 +762,11 @@
                         <!-- Attachments now render inside each message's own card in the HTML
                              (see BuildConversationHtml) instead of in a separate section pinned to
                              the bottom of the pane, disconnected from the message that owns them. -->
-                        <wv2:WebView2 x:Name="ReadingPane" Grid.Row="2" Margin="24,12,24,16"/>
+                        <Grid Grid.Row="2" Margin="24,12,24,16">
+                            <wv2:WebView2 x:Name="ReadingPane"/>
+                            <TextBlock x:Name="ReadingPaneLoadingOverlay" Text="Loading…" Foreground="#AAAAAA"
+                                       Margin="8,8,0,0" Visibility="Collapsed" IsHitTestVisible="False"/>
+                        </Grid>
                     </Grid>
                 </Border>
             </Grid>

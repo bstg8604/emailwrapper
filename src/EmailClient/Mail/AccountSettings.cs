@@ -19,6 +19,16 @@ public sealed class AccountSettings
     public string Password { get; set; } = "";
     public string DisplayName { get; set; } = "";
 
+    // IITB's IMAP/SMTP AUTH takes the LDAP id (a plain username like "student1"), not the full
+    // email address — https://www.cc.iitb.ac.in/page/configurewebmail says so explicitly. Kept
+    // separate from Email (which is still the real address mail gets sent From/shown as) rather
+    // than overloading one field for two different identities; empty means "same as Email" for
+    // any server that does accept the full address as its own username.
+    public string Username { get; set; } = "";
+
+    /// <summary>What actually gets sent as the IMAP/SMTP AUTH username.</summary>
+    public string LoginName => string.IsNullOrWhiteSpace(Username) ? Email : Username;
+
     public string ImapHost { get; set; } = "imap.iitb.ac.in";
     public int ImapPort { get; set; } = 993;
 

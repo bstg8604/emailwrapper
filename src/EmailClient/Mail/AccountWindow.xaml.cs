@@ -71,6 +71,11 @@ public partial class AccountWindow : Window
             _settings.AccountWindowWidth = Width;
             _settings.AccountWindowHeight = Height;
             _settings.Save();
+
+            // Detach ownership before the native window actually closes — WPF's WindowStyle="None"
+            // + WindowChrome + Owner combination can otherwise send the owner (MainWindow) a
+            // minimize along with this window's own close.
+            Owner = null;
         };
 
         Loaded += (_, _) => UI.WindowCorners.Apply(this);
@@ -89,6 +94,7 @@ public partial class AccountWindow : Window
         if (existing is not null)
         {
             EmailBox.Text = existing.Email;
+            UsernameBox.Text = existing.Username;
             DisplayNameBox.Text = existing.DisplayName;
             // Without this, reopening Profile for an already-signed-in account (e.g. via
             // "Account settings…") and clicking Sign in again fails validation immediately —
@@ -103,7 +109,12 @@ public partial class AccountWindow : Window
             // used to always start with Advanced collapsed, hiding the very settings that made
             // sign-in work last time.
             if (existing.UsesNonDefaultServers())
+            {
+                _iitbMode = false;
+                UsernameLabel.Text = "Username";
+                AdvancedToggle.Text = "Using IIT Bombay?";
                 AdvancedPanel.Visibility = Visibility.Visible;
+            }
 
             // Already signed in: show the read-only summary, not the sign-in form all over
             // again — that form is for actually adding a new account, and reusing it here made
@@ -333,11 +344,45 @@ public partial class AccountWindow : Window
 
     // ---- Profile (sign-in) ----------------------------------------------------------------------
 
+    // Starts true (IITB terminology/prefills) since that's who this app is built for; "Not from
+    // IIT Bombay?" switches the form to generic wording and clears the IITB-specific prefilled
+    // values so nothing implies a server that isn't actually being used. Server settings are
+    // editable either way — this only changes what's prefilled and what the fields are called.
+    private bool _iitbMode = true;
+
     private void AdvancedToggle_Click(object sender, MouseButtonEventArgs e)
     {
-        AdvancedPanel.Visibility = AdvancedPanel.Visibility == Visibility.Visible
-            ? Visibility.Collapsed
-            : Visibility.Visible;
+        _iitbMode = !_iitbMode;
+        ApplyIitbMode();
+        AdvancedPanel.Visibility = _iitbMode ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    private void ApplyIitbMode()
+    {
+        if (_iitbMode)
+        {
+            UsernameLabel.Text = "LDAP ID";
+            AdvancedToggle.Text = "Not from IIT Bombay?";
+            if (string.IsNullOrWhiteSpace(EmailBox.Text))
+                EmailBox.Text = "@iitb.ac.in";
+            if (string.IsNullOrWhiteSpace(ImapHostBox.Text))
+                ImapHostBox.Text = "imap.iitb.ac.in";
+            if (string.IsNullOrWhiteSpace(SmtpHostBox.Text))
+                SmtpHostBox.Text = "smtp-auth.iitb.ac.in";
+        }
+        else
+        {
+            UsernameLabel.Text = "Username";
+            AdvancedToggle.Text = "Using IIT Bombay?";
+            if (EmailBox.Text == "@iitb.ac.in")
+                EmailBox.Text = "";
+            if (ImapHostBox.Text == "imap.iitb.ac.in")
+                ImapHostBox.Text = "";
+            if (SmtpHostBox.Text == "smtp-auth.iitb.ac.in")
+                SmtpHostBox.Text = "";
+            // Ports (993/587) are standard IMAPS/submission ports well beyond just IITB, so they
+            // stay put either way — only the IITB-specific hostnames and email domain get cleared.
+        }
     }
 
     private void EmailBox_KeyDown(object sender, KeyEventArgs e)
@@ -380,6 +425,7 @@ public partial class AccountWindow : Window
     private AccountSettings? ReadFormOrShowError()
     {
         var email = EmailBox.Text.Trim();
+        var username = UsernameBox.Text.Trim();
         var password = RevealPasswordToggle.IsChecked == true ? PasswordRevealBox.Text : PasswordBox.Password;
 
         if (string.IsNullOrWhiteSpace(email) || !email.Contains('@') || string.IsNullOrEmpty(password))
@@ -396,6 +442,7 @@ public partial class AccountWindow : Window
         return new AccountSettings
         {
             Email = email,
+            Username = username,
             Password = password,
             DisplayName = DisplayNameBox.Text.Trim(),
             ImapHost = ImapHostBox.Text.Trim(),
@@ -605,6 +652,31 @@ public partial class AccountWindow : Window
     }
 
     // ---- Signature formatting toolbar ----------------------------------------------------------
+
+    private async void SigFontCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_sigEditor is not { IsReady: true } || SigFontCombo.SelectedItem is not System.Windows.Controls.ComboBoxItem { Tag: string family })
+            return;
+        await _sigEditor.ExecAsync("fontName", family);
+        await _sigEditor.CommitFontPreviewAsync();
+    }
+
+    private async void SigFontComboItem_MouseEnter(object sender, System.Windows.Input.MouseEventArgs e)
+    {
+        if (_sigEditor is not { IsReady: true } || sender is not System.Windows.Controls.ComboBoxItem { Tag: string family })
+            return;
+        await _sigEditor.PreviewFontNameAsync(family);
+    }
+
+    private async void SigFontCombo_DropDownClosed(object sender, EventArgs e) =>
+        await (_sigEditor?.CancelFontPreviewAsync() ?? Task.CompletedTask);
+
+    private async void SigSizeCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_sigEditor is not { IsReady: true } || SigSizeCombo.SelectedItem is not System.Windows.Controls.ComboBoxItem { Content: string points })
+            return;
+        await _sigEditor.SetFontSizeAsync(int.Parse(points));
+    }
 
     private async void Bold_Click(object sender, RoutedEventArgs e) => await (_sigEditor?.ExecAsync("bold") ?? Task.CompletedTask);
     private async void Italic_Click(object sender, RoutedEventArgs e) => await (_sigEditor?.ExecAsync("italic") ?? Task.CompletedTask);

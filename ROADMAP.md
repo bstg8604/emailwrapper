@@ -1,7 +1,13 @@
-# Peacock — Full Feature Roadmap
+# Purplemail — Full Feature Roadmap
 
 ## Context
-The app (currently named "Peacock", to be renamed later) is a custom WPF frontend that puppets the real webmail.iitb.ac.in (Roundcube) session in a hidden WebView2, rather than reimplementing an email client — see the existing `PLAN.md` for that architecture. So far it has: a 3-pane shell, mock-data-driven inbox/sent/drafts/trash/starred, search, quick filters, compose with reply/forward prefill, star/archive/delete, tray + custom window chrome, and a `DomBridge` with Roundcube-aware (but not yet live-verified) selectors.
+The app (named **Purplemail**) is a real IMAP/SMTP desktop email client for the user's IITB
+mailbox (MailKit/MimeKit), not a webmail-automation wrapper — see `PLAN.md` for the current
+architecture and `PROGRESS.md` for the up-to-date state as of 2026-08-31. The paragraph below
+describing a WebView2/Roundcube-puppeting `DomBridge` is history from before the IMAP rewrite;
+kept for context on how the project got here.
+
+The app began as a custom WPF frontend that puppeted the real webmail.iitb.ac.in (Roundcube) session in a hidden WebView2, rather than reimplementing an email client. So far it has: a 3-pane shell, mock-data-driven inbox/sent/drafts/trash/starred, search, quick filters, compose with reply/forward prefill, star/archive/delete, tray + custom window chrome, and a `DomBridge` with Roundcube-aware (but not yet live-verified) selectors.
 
 The user now wants "every feature/option" — explicitly benchmarking against Gmail, Apple Mail, Outlook, and Betterbird/Thunderbird. This plan inventories that full feature set, grouped by priority, so it can be worked through systematically rather than as an unbounded, undefined blob of "more features." Nothing here is committed to blindly — the **Known open risk** from `PLAN.md` still applies: DomBridge automation against the real Roundcube instance needs live verification before any backend-touching feature (send, delete, mark-read, etc.) can be trusted end-to-end.
 
@@ -37,13 +43,12 @@ Currently `UseMockData = true` in `MainWindow.xaml.cs` short-circuits almost eve
 
 ### Tier 0 (new) — IMAP/SMTP backend
 1. ✅ Connect, authenticate, list folders, list/open messages, flags, move/delete/archive, save
-   draft — `Mail/ImapMailBackend.cs`. Builds clean; **not yet tested against a real account.**
+   draft — `Mail/ImapMailBackend.cs`. **Live-tested against the real account.**
 2. ✅ Send via SMTP, with a Sent-folder copy appended afterward (plain SMTP doesn't file one on
    its own).
-3. ⏳ **SMTP host/port need confirming** — currently a best guess (`smtp-auth.iitb.ac.in:587`,
-   STARTTLS), editable in the sign-in dialog's "Server settings" without a rebuild.
-4. Live refresh is 60-second polling; a real IMAP IDLE connection would be a natural upgrade for
-   instant push once the basics are proven live.
+3. ✅ SMTP host/port confirmed working against the live account.
+4. ✅ **IMAP IDLE** — a dedicated second connection (`_idleClient`) pushes new-mail notifications
+   instantly instead of polling, with a circuit breaker after repeated IDLE failures.
 
 ### Tier 1 — Core mail-client parity (Gmail / Outlook / Apple Mail / Betterbird baseline)
 - ✅ **Reply-all** — pre-fills To from sender, Cc from the original To+Cc.
@@ -54,10 +59,14 @@ Currently `UseMockData = true` in `MainWindow.xaml.cs` short-circuits almost eve
 - ✅ **Image/external-content blocking** — remote `<img>` srcs are swapped for a transparent pixel with a "Show images" bar (`SanitizeRemoteImages` in `MainWindow.xaml.cs`).
 - ✅ **Attachments (viewing)** — attachment chips in the reading pane open an **in-app viewer** (`UI/AttachmentViewerWindow`): PDFs in Edge's own viewer, images on the app backdrop, text-like files as monospace text, HTML/SVG as source rather than executed, and an honest fallback otherwise. Save-a-copy and Open-externally are secondary actions. Sample attachments are real generated files (PDF/PNG/TXT); the live path downloads through the authenticated session into the same viewer, pending Tier 0 verification.
 - ✅ **Drafts** — closing compose with unsent content saves to Drafts; reopening a draft resumes editing, formatting included. `Mail/ImapMailBackend.SaveDraftAsync` appends a real draft via IMAP; not yet live-tested.
-- **Conversation/thread view** — group messages by subject/thread like Gmail, with expand/collapse.
+- ✅ **Conversation/thread view** — messages render as Apple Mail-style cards, siblings found
+  folder-wide via `FindConversationSiblingsAsync`; nested quoted history is collapsed or cut to
+  avoid showing the same content twice.
 - ✅ **Attachments in Compose** — file picker *and* drag-and-drop, chips with real sizes, remove before sending. Sent as real MIME attachments via `MailKit.BodyBuilder`; not yet live-tested.
 - ✅ **Rich text formatting toolbar** in Compose — bold/italic/underline/strikethrough, bulleted and numbered lists, indent/outdent, block quote, alignment, font size, colour, links, clear formatting, plus a plain-text toggle. Implemented as a WebView2 `contenteditable` rather than a WPF RichTextBox, so the body is already the HTML a MIME message wants — no FlowDocument-to-HTML layer in between. Replies/forwards quote the original as a real `<blockquote>` that keeps its formatting.
-- **Remaining message actions**: flag/important marker, move to folder (drag-and-drop and a "Move to…" menu), print.
+- ✅ **Move to folder** — a "Move to…" menu (drag-and-drop still open); folders themselves can now
+  be created/renamed/deleted from the account page's Folders section.
+- **Remaining message actions**: flag/important marker, drag-and-drop move, print.
 - **View options** not yet done: toggle conversation view on/off; reading-pane position (right vs. bottom vs. off, like Outlook); sort by size.
 - **External link warning** — confirm before opening links from message bodies in the default browser.
 
@@ -66,8 +75,15 @@ Currently `UseMockData = true` in `MainWindow.xaml.cs` short-circuits almost eve
 - ✅ **Undo send** — Send hands the message to `MainWindow`, which shows a 5-second snackbar with UNDO before actually dispatching; undo reopens the message in compose. Sent mail lands in the Sent folder.
 - **Snooze** — hide a message from Inbox until a later time (Gmail); a local UI/state feature — no server-side snooze exists over IMAP either, so this needs local scheduling + re-surfacing regardless of backend.
 - **Scheduled send** — pick a future send time; same local-scheduling approach as snooze.
-- **Signature** — configurable per-account signature auto-inserted into new/reply/forward compose bodies.
-- ✅ **Contacts autocomplete** — `Mail/ContactsIndex.cs` builds a ranked list from Sent/Inbox correspondence history, wired into Compose's To/Cc/Bcc as a dropdown. No institute-wide directory lookup (IITB's LDAP directory isn't reachable off-campus — see `PLAN.md`); an LDAP settings slot could be added later for on-campus/VPN use.
+- ✅ **Signature** — multiple named signatures with a rich-text editor (bold/italic/underline/
+  strikethrough/lists/indent/quote/alignment/colour/link/font family/point size with live hover
+  preview), a default flag, and inline insertion from Compose (a single saved signature shows as
+  a named button; more than one shows a dropdown).
+- ✅ **Contacts autocomplete** — `Mail/ContactsIndex.cs`'s ranked Sent/Inbox correspondence history
+  merged with manually-added contacts (`Settings/ManualContactsStore.cs`), wired into Compose's
+  To/Cc/Bcc as a dropdown. No institute-wide directory lookup (IITB's LDAP directory isn't
+  reachable off-campus — see `PLAN.md`); an LDAP settings slot could be added later for
+  on-campus/VPN use.
 - **Saved/advanced search** — filters by from/to/subject/date range/has-attachment/folder, with the ability to save a search as a quick filter (extending the existing `FilterMessage`/quick-filter-chip mechanism in `MainWindow.xaml.cs`).
 - **Filters/rules** — "when mail matches X, do Y" (Outlook rules / Gmail filters) — IMAP has no built-in rule engine, so this means reimplementing rule matching locally on top of fetched mail, or driving Sieve if the server exposes ManageSieve.
 - **Desktop notification actions** — Windows toast with inline "Archive"/"Reply" actions, not just a plain balloon (current `TrayIcon.ShowBalloon` is text-only).
@@ -82,7 +98,9 @@ Currently `UseMockData = true` in `MainWindow.xaml.cs` short-circuits almost eve
 - **Jump list** (right-click taskbar icon → "Compose new message" shortcut).
 - **Single-instance enforcement** — launching the exe again should focus the existing window/tray icon instead of opening a second instance.
 - **Local message cache for offline reading** — persist fetched messages (e.g. SQLite or a simple JSON store) keyed by IMAP `UIDVALIDITY`+UID, so recently read mail is viewable without a live connection.
-- **Settings window** — a real preferences UI (currently there is none) covering: notifications on/off, sound, signature editor, theme, density, reading-pane position, keyboard-shortcut reference, start-with-Windows toggle, about/version.
+- ✅ **Settings page** exists on the account page (undo-send delay, manage muted senders) —
+  still missing: notifications on/off, sound, theme, density, reading-pane position,
+  keyboard-shortcut reference, start-with-Windows toggle, about/version.
 - **Start with Windows** toggle (registry Run key or a Startup shortcut).
 - **Accessibility** — screen-reader labels on icon-only buttons (compose/star/reply/etc. currently rely on glyphs + tooltip only), high-contrast theme support, full keyboard navigation of the 3-pane layout.
 
@@ -94,19 +112,18 @@ Currently `UseMockData = true` in `MainWindow.xaml.cs` short-circuits almost eve
 
 ## Suggested working order
 
-**Done so far:** the first Tier 1 slice (reply-all, Cc/Bcc, multi-select, mark read/unread,
-sort, image blocking, attachments, local drafts) and the Tier 2 quick wins (keyboard
-shortcuts, undo send). See `PROGRESS.md`.
+**Done so far:** Tier 0 (live IMAP/SMTP + IDLE) and effectively all of Tier 1 and the
+signature/contacts/settings-page slice of Tier 2 — conversation view, compose attachments, rich
+text with font family/size and live preview, move-to-folder, drafts, signatures, contacts
+(auto + manual). See `PROGRESS.md` for the detailed, current write-up.
 
 **Remaining, in recommended order:**
-1. **Tier 0** — needs a live login session; can't be completed without the user. This is now
-   the main blocker: every feature above works against sample data only.
-2. Rest of Tier 1 — conversation view, compose attachments, rich text, move-to-folder, flags.
-3. Rest of Tier 2 — snooze, scheduled send, signatures, contacts autocomplete, advanced
-   search, rich toast notifications, taskbar unread badge.
-4. Tier 3 — settings window + dark mode first (gives every preference a home), then density,
-   multiple compose windows, offline cache, accessibility.
-5. Tier 4 — naming/branding, then icon, installer, auto-update.
+1. Rest of Tier 2 — snooze, scheduled send, flag/important marker, advanced search, filters/rules,
+   rich toast notifications, taskbar unread badge.
+2. Tier 3 — dark mode first (the settings page already exists, just needs a theme toggle wired to
+   it), then density, multiple compose windows, offline cache, accessibility.
+3. Tier 4 — naming/branding (app is now named Purplemail; icon/installer still use a placeholder),
+   then icon, installer, auto-update.
 
 **Known gap worth fixing early in Tier 3:** ✅ done 2026-08-29 — 20 icon-only buttons now carry
 `AutomationProperties.Name`. It paid off immediately: the new move-to-folder flow was verified

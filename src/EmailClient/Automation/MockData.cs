@@ -15,7 +15,8 @@ public sealed record MockMessage(
     string Cc = "",
     bool Unread = false,
     bool Starred = false,
-    IReadOnlyList<MailAttachment>? Attachments = null)
+    IReadOnlyList<MailAttachment>? Attachments = null,
+    CalendarInvite? Calendar = null)
 {
     public DateTime When => DateTime.Now - Ago;
 
@@ -28,6 +29,10 @@ public sealed record MockMessage(
         ? (string.IsNullOrWhiteSpace(To) ? "(no recipient)" : MailText.DisplayName(To))
         : MailText.DisplayName(From);
 
+    private string RowSenderAddress => Folder is "Sent" or "Drafts"
+        ? MailText.AddressOnly(To)
+        : MailText.AddressOnly(From);
+
     public InboxRow ToRow() => new(
         Id,
         RowSender,
@@ -37,7 +42,8 @@ public sealed record MockMessage(
         Unread,
         Starred,
         Attachments is { Count: > 0 },
-        When);
+        When,
+        RowSenderAddress);
 
     public MessageDetail ToDetail() => new(
         string.IsNullOrWhiteSpace(Subject) ? "(no subject)" : Subject,
@@ -46,7 +52,9 @@ public sealed record MockMessage(
         BodyHtml,
         To,
         Cc,
-        Attachments);
+        Attachments,
+        Calendar: Calendar,
+        Timestamp: When);
 }
 
 /// <summary>

@@ -108,6 +108,39 @@ public sealed class RichHtmlEditor
             $"exec({JsonSerializer.Serialize(command)}, {argument})");
     }
 
+    /// <summary>execCommand("fontSize") only has the legacy 1-7 HTML scale, no way to ask for an
+    /// actual point size — same workaround as ComposeWindow's body editor.</summary>
+    public async Task SetFontSizeAsync(int points)
+    {
+        if (!IsReady)
+            return;
+
+        await _view.CoreWebView2.ExecuteScriptAsync($"setFontSizePt({points})");
+    }
+
+    /// <summary>Live font preview while hovering a font-picker option — see the JS-side comment in
+    /// <see cref="EditorHtml"/> for how the undo-based swap avoids stacking history across hovers.</summary>
+    public async Task PreviewFontNameAsync(string family)
+    {
+        if (!IsReady)
+            return;
+        await _view.CoreWebView2.ExecuteScriptAsync($"previewFontName({JsonSerializer.Serialize(family)})");
+    }
+
+    public async Task CancelFontPreviewAsync()
+    {
+        if (!IsReady)
+            return;
+        await _view.CoreWebView2.ExecuteScriptAsync("cancelFontPreview()");
+    }
+
+    public async Task CommitFontPreviewAsync()
+    {
+        if (!IsReady)
+            return;
+        await _view.CoreWebView2.ExecuteScriptAsync("commitFontPreview()");
+    }
+
     private const string EditorHtml = """
         <html><head><meta name="color-scheme" content="light"><style>
         :root { color-scheme: light; }
@@ -134,6 +167,23 @@ public sealed class RichHtmlEditor
             });
             editor.addEventListener("blur", post);
 
+            // Plain Enter is a tight line break (a single <br>, matching what the browser's own
+            // Shift+Enter used to do) — the browser's native plain-Enter behaviour is a new <div>/<p>
+            // block instead, which carries default block margins and reads as a much bigger gap than
+            // typed. Shift+Enter is kept as the way to deliberately add that visible blank-line gap,
+            // now done explicitly (two <br>s) since the browser's own Shift+Enter is a single <br>
+            // and would otherwise be indistinguishable from plain Enter.
+            editor.addEventListener("keydown", function(e) {
+                if (e.key !== "Enter" || e.ctrlKey || e.altKey)
+                    return;
+                e.preventDefault();
+                if (e.shiftKey)
+                    document.execCommand("insertHTML", false, "<br><br>");
+                else
+                    document.execCommand("insertLineBreak");
+                post();
+            });
+
             window.setContent = function(html) { editor.innerHTML = html; };
             window.getContent = function() {
                 return JSON.stringify({ html: editor.innerHTML, text: editor.innerText });
@@ -153,6 +203,41 @@ public sealed class RichHtmlEditor
                 ensureSelection();
                 document.execCommand(command, false, value === undefined ? null : value);
                 post();
+            };
+            window.setFontSizePt = function(pt) {
+                editor.focus();
+                ensureSelection();
+                document.execCommand("fontSize", false, "7");
+                editor.querySelectorAll('font[size="7"]').forEach(function(node) {
+                    node.removeAttribute("size");
+                    node.style.fontSize = pt + "pt";
+                });
+                post();
+            };
+            // Hovering a font option in the picker previews it in place — applied as a real (but
+            // undoable) execCommand so the actual rendering engine picks the font, rather than
+            // faking it with a wrapper span that wouldn't match a substitution execCommand would.
+            // previewFontName undoes whatever the last hover applied before applying the new one,
+            // so hovering across several options in a row doesn't stack undo history; cancelFontPreview
+            // undoes the last one if the dropdown closes without a click ever committing it.
+            let previewApplied = false;
+            window.previewFontName = function(family) {
+                editor.focus();
+                ensureSelection();
+                if (previewApplied)
+                    document.execCommand("undo");
+                document.execCommand("fontName", false, family);
+                previewApplied = true;
+            };
+            window.cancelFontPreview = function() {
+                if (previewApplied) {
+                    document.execCommand("undo");
+                    previewApplied = false;
+                    post();
+                }
+            };
+            window.commitFontPreview = function() {
+                previewApplied = false;
             };
         })();
         </script>

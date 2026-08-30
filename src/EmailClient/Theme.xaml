@@ -332,4 +332,28 @@
         </Setter>
     </Style>
 
+    <!-- ToolTip — the default OS tooltip (flat yellow-white box, square corners, system font) reads
+         like classic Windows chrome next to the rest of this theme's flat, rounded, purple-accented
+         look. A dark rounded pill matches the app's own popovers/menus instead. -->
+    <Style TargetType="ToolTip">
+        <Setter Property="Background" Value="#FF544C63"/>
+        <Setter Property="Foreground" Value="White"/>
+        <Setter Property="FontSize" Value="11.5"/>
+        <Setter Property="Padding" Value="9,5"/>
+        <Setter Property="HasDropShadow" Value="False"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ToolTip">
+                    <Border Background="{TemplateBinding Background}" CornerRadius="6"
+                            Padding="{TemplateBinding Padding}" SnapsToDevicePixels="True">
+                        <Border.Effect>
+                            <DropShadowEffect Color="#FF000000" Opacity="0.12" BlurRadius="10" ShadowDepth="1"/>
+                        </Border.Effect>
+                        <ContentPresenter/>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
 </ResourceDictionary>

@@ -61,10 +61,16 @@
     <!-- A floating panel rather than a regular window — closer to macOS Quick Look than to
          "opening a document": rounded, shadowed, no maximize/resize chrome, sized to the image
          instead of a fixed window size. -->
-    <Border Background="White" CornerRadius="12" MinWidth="280">
+    <!-- Outer border carries only the shadow (unclipped, so the blur isn't cut into a hard ring);
+         inner border carries the actual rounded-corner clip — the two can't be the same element
+         (Effect + ClipToBounds/CornerRadius on one Border hard-clips the shadow into a visible
+         ring), and a CornerRadius alone doesn't clip WPF children without ClipToBounds too, which
+         is why square content used to bleed past the "rounded" outline into the transparent window. -->
+    <Border MinWidth="280">
         <Border.Effect>
             <DropShadowEffect Color="#FF000000" Opacity="0.28" BlurRadius="30" ShadowDepth="6"/>
         </Border.Effect>
+        <Border Background="White" CornerRadius="12" ClipToBounds="True">
         <StackPanel>
             <Grid x:Name="TitleBar" Height="38" Background="Transparent"
                   MouseLeftButtonDown="TitleBar_MouseLeftButtonDown">
@@ -79,8 +85,16 @@
                         AutomationProperties.Name="Close" Click="CloseButton_Click"/>
             </Grid>
 
-            <Border Background="#FFF7F6FA">
-                <Image x:Name="PreviewImage" Stretch="Uniform" Margin="0"/>
+            <Border x:Name="ImageArea" Background="#FFF7F6FA" ClipToBounds="True">
+                <!-- MaxWidth/MaxHeight set in code-behind (a screen-size fraction) — that's what
+                     caps how far the *window* grows as you zoom; the image inside can still grow
+                     past it, and this ScrollViewer is what lets you pan around that overflow
+                     instead of it just spilling past the window's edges. -->
+                <ScrollViewer x:Name="ImageScrollViewer" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
+                              PreviewMouseWheel="ImageScrollViewer_PreviewMouseWheel">
+                    <Image x:Name="PreviewImage" Stretch="Uniform" Margin="0"
+                           MouseLeftButtonDown="PreviewImage_MouseLeftButtonDown"/>
+                </ScrollViewer>
             </Border>
 
             <Grid Height="42">
@@ -98,5 +112,6 @@
                 </StackPanel>
             </Grid>
         </StackPanel>
+        </Border>
     </Border>
 </Window>

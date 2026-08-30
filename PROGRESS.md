@@ -1,8 +1,98 @@
 # Progress Report
 
-**Project:** Peacock (working name) — custom desktop email client for the user's IITB mailbox
-**Last updated:** 2026-08-29
+**Project:** Purplemail — custom desktop email client for the user's IITB mailbox
+**Last updated:** 2026-08-31
 **Repo:** https://github.com/bstg8604/emailwrapper
+
+> **Everything from here to the next `---` is current as of 2026-08-31.** Sections further down
+> (from "Architecture change (2026-08-29...)" onward) are older history, kept for context on how
+> the app got here, but no longer describe the present state — see `ROADMAP.md` for the current
+> tier-by-tier checklist.
+
+## Current state (2026-08-31)
+
+The app is renamed **Purplemail** and runs against the user's **real IITB mailbox over live
+IMAP/SMTP** — no longer sample-data-only. `UseMockData` still exists as a fallback/demo mode, but
+day-to-day use since the IMAP rewrite has been against the live account. Builds clean (0 warnings,
+0 errors) throughout this pass.
+
+### Built and working since the last full write-up
+- **IMAP IDLE push** replaced the old 60-second poll — a dedicated second IMAP connection
+  (`_idleClient` in `Mail/ImapMailBackend.cs`) sits in IDLE and fires `OnMailboxActivity` the
+  moment new mail arrives, with a circuit breaker (`MaxConsecutiveIdleFailures = 3`) so a flaky
+  IDLE session degrades instead of looping forever.
+- **Conversation/thread view.** Every open message renders as one or more Apple Mail-style cards
+  (a single message is just a conversation of one), with siblings found **folder-wide** via
+  `FindConversationSiblingsAsync`, not just the loaded page. Nested quoted history inside a
+  reply's own HTML is either collapsed behind a CSS checkbox-toggle ("•••") or cut outright when
+  a sibling card already shows that same content — several rounds of regex work went into making
+  this correct against real Gmail/Roundcube/Outlook quote conventions (embedded `mailto:` links
+  inside the attribution line, forwarded-message markers nested inside a blockquote, a false-positive
+  guard so a literal "on" inside a word like "Convocation" never gets mistaken for a quote start).
+- **Apple Mail-exact attribution formatting** — `On {Month D, YYYY}, at {h:mm AM/PM}, {Name}
+  <{email}> wrote:` for replies, `Begin forwarded message:` + From/Subject/Date/To(/Cc) for
+  forwards, both using an always-absolute date (`MailText.FormatAbsoluteDate`) so a quote baked
+  into a reply never freezes at a stale "Yesterday".
+- **Account page rebuilt as a real settings surface** (`Mail/AccountWindow.xaml(.cs)`, renamed
+  from the old `LoginWindow`): a left sidebar (Profile / Signature / Contacts / Folders /
+  Settings) replaces the old two-tab pill switcher.
+  - **Signature**: multiple named signatures, a rich-text WebView2 editor (`UI/RichHtmlEditor.cs`)
+    with bold/italic/underline/strikethrough/lists/indent/quote/alignment/colour/link, **font
+    family and point-size pickers with live hover preview** (hovering an option previews it on the
+    selected text immediately, reverting if you move off without clicking), default-signature
+    flag. In Compose, a single saved signature shows as one button named after that signature
+    instead of a dropdown that only makes sense with an actual choice to make.
+  - **Contacts**: manual add/edit/delete contacts (`Settings/ManualContactsStore.cs`, local JSON)
+    merged with the existing auto-learned "people you've emailed" list into Compose's
+    To/Cc/Bcc autocomplete.
+  - **Folders**: create/rename/delete top-level folders via new `ImapMailBackend` methods
+    (`CreateFolderAsync`/`RenameFolderAsync`/`DeleteFolderAsync`), disabled for Inbox and the
+    resolved special folders; changes refresh the main window's own folder sidebar immediately.
+  - **Settings**: undo-send delay (1–60s) and a manage-muted-senders list, both previously
+    settable only through a Mute button with no way to review or undo.
+- **Rich-editor line-break behaviour matches user expectation, not the browser default.** Plain
+  Enter is a tight `<br>` line break (no paragraph gap); Shift+Enter explicitly inserts a visible
+  blank-line gap. (The browser's native default is the reverse — Enter starts a new block with
+  margin, Shift+Enter is the tight break — which is what prompted the change.)
+  Implemented identically in both Compose's own editor and the shared `RichHtmlEditor.cs`.
+- **Recipient lists (To/Cc) are expandable, not a dead-end "+6 more".** A CSS checkbox-toggle
+  reveals the rest with a "show less" control that appears after the revealed names, not before.
+  Sender/recipient addresses are real `mailto:` links (address only, not the display name,
+  styled to inherit the surrounding text colour rather than the theme's purple) that open a
+  pre-addressed Compose window.
+- **Message-open responsiveness**: selecting a row now updates the header instantly from data
+  already in hand and shows a lightweight loading state while the body fetches, with a
+  staleness guard (`_openRequestSeq`) so a fast second click can't have an earlier fetch clobber
+  it. A session-lifetime cache (`_messageDetailCache`) makes reopening an already-fetched message
+  free. An earlier attempt at background prefetching over a second dedicated IMAP connection was
+  tried and then **removed** — it added connection overhead without a proven latency win, and its
+  WebView2 "Loading…" placeholder was doubling per-open navigation cost; the loading state is now
+  a plain native WPF overlay instead of a second WebView2 navigation.
+- **Message-list scrolling**: virtualization (`VirtualizingPanel.IsVirtualizing`) had regressed to
+  off entirely — re-enabled with `ScrollUnit="Pixel"` and a larger cache window
+  (`CacheLength="2,2"`), which fixed both jitter and dropped frames. A custom smooth-scroll
+  animation was tried in between and made things worse on precision-touchpad input (miscalibrated
+  for touchpad delta sizes vs. full mouse-wheel notches) — reverted in favour of WPF's own
+  built-in pixel scrolling.
+- **Transitions audit**: several Visibility toggles that used to snap instantly now animate via
+  the existing `UI/Motion.cs` helpers (PagerBar, the live-folder sidebar section, Compose's
+  Cc/Bcc rows and its link-insert bar), gated so they only animate a real collapsed↔visible
+  transition, not every refresh.
+- **Bug fixes this pass**: the toolbar's signed-in avatar circle was rendering its initial letter
+  through the icon font it inherited from the button style (`Segoe Fluent Icons`), producing an
+  unrelated glyph instead of the letter — fixed with an explicit `FontFamily` on that TextBlock.
+  `QuickLookWindow` (image viewer) corner-rounding and cursor-anchored zoom fixed. Added
+  "Helvetica" (falls back to Arial/sans-serif — Windows has no Helvetica font file) to the font
+  pickers.
+
+### Not yet done (unchanged from before, still open)
+- Dark mode, density toggle, settings for theme/notifications/start-with-Windows.
+- Snooze, scheduled send, filters/rules, saved/advanced search.
+- Multiple non-modal compose windows, pop-out reading pane, offline/local message cache.
+- Installer, auto-update, single-instance enforcement, app icon/branding.
+- Full list with tier priorities is in `ROADMAP.md`.
+
+---
 
 > **Architecture change (2026-08-29, later same day):** the app was rewritten from a
 > webmail-automation wrapper (WebView2 puppeting Roundcube's own UI) to a real IMAP/SMTP client

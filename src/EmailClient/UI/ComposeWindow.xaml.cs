@@ -124,6 +124,7 @@ public partial class ComposeWindow : Window
         Loaded += async (_, _) => await InitialiseEditorAsync();
         Loaded += (_, _) => WireRecipientAutocomplete();
         Loaded += (_, _) => _autosaveTimer.Start();
+        Loaded += (_, _) => RefreshSignatureControl();
         _autosaveTimer.Tick += AutosaveTimer_Tick;
 
         Closed += (_, _) =>
@@ -170,6 +171,23 @@ public partial class ComposeWindow : Window
                 pending = setTimeout(post, 150);
             });
             editor.addEventListener("blur", post);
+
+            // Plain Enter is a tight line break (a single <br>, matching what the browser's own
+            // Shift+Enter used to do) — the browser's native plain-Enter behaviour is a new <div>/<p>
+            // block instead, which carries default block margins and reads as a much bigger gap than
+            // typed. Shift+Enter is kept as the way to deliberately add that visible blank-line gap,
+            // now done explicitly (two <br>s) since the browser's own Shift+Enter is a single <br>
+            // and would otherwise be indistinguishable from plain Enter.
+            editor.addEventListener("keydown", function(e) {
+                if (e.key !== "Enter" || e.ctrlKey || e.altKey)
+                    return;
+                e.preventDefault();
+                if (e.shiftKey)
+                    document.execCommand("insertHTML", false, "<br><br>");
+                else
+                    document.execCommand("insertLineBreak");
+                post();
+            });
 
             // Ctrl+Shift+V ("paste and match style" in Gmail/Apple Mail terms): reduces whatever
             // is on the clipboard to plain text instead of carrying over Word/Excel/Docs styling.
@@ -247,6 +265,30 @@ public partial class ComposeWindow : Window
                     node.style.fontSize = pt + "pt";
                 });
                 post();
+            };
+            // Hovering a font option in the picker previews it in place — applied as a real (but
+            // undoable) execCommand so the actual rendering engine picks the font. previewFontName
+            // undoes whatever the last hover applied before applying the new one, so hovering across
+            // several options in a row doesn't stack undo history; cancelFontPreview undoes the last
+            // one if the dropdown closes without a click ever committing it.
+            let previewApplied = false;
+            window.previewFontName = function(family) {
+                editor.focus();
+                ensureSelection();
+                if (previewApplied)
+                    document.execCommand("undo");
+                document.execCommand("fontName", false, family);
+                previewApplied = true;
+            };
+            window.cancelFontPreview = function() {
+                if (previewApplied) {
+                    document.execCommand("undo");
+                    previewApplied = false;
+                    post();
+                }
+            };
+            window.commitFontPreview = function() {
+                previewApplied = false;
             };
         })();
         </script>
@@ -1196,6 +1238,36 @@ public partial class ComposeWindow : Window
 
     public Func<List<SignatureOption>>? GetSignatures { get; set; }
 
+    /// <summary>
+    /// Decides which of the two signature controls is shown: the dropdown only earns its keep once
+    /// there's an actual choice between signatures; with exactly one saved, a plain button named
+    /// after that signature (not the generic word "Signature") replaces it and inserts directly.
+    /// Called on load and again whenever the combo would otherwise have refreshed, so a signature
+    /// added/renamed/removed elsewhere while this window is open is still reflected correctly.
+    /// </summary>
+    private void RefreshSignatureControl()
+    {
+        var signatures = GetSignatures?.Invoke() ?? [];
+        if (signatures.Count == 1)
+        {
+            SingleSignatureButton.Content = signatures[0].Name;
+            SingleSignatureButton.Tag = signatures[0].Html;
+            SingleSignatureButton.Visibility = Visibility.Visible;
+            SignatureCombo.Visibility = Visibility.Collapsed;
+        }
+        else
+        {
+            SingleSignatureButton.Visibility = Visibility.Collapsed;
+            SignatureCombo.Visibility = signatures.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+        }
+    }
+
+    private void SingleSignatureButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (SingleSignatureButton.Tag is string html)
+            InsertSignature(html);
+    }
+
     /// <summary>Refills the combo just before it drops down, so a signature added/renamed/removed
     /// elsewhere while this Compose window is open still shows up correctly.</summary>
     private void SignatureCombo_DropDownOpened(object sender, EventArgs e)
@@ -1244,6 +1316,21 @@ public partial class ComposeWindow : Window
         if (!_editorReady || FontCombo.SelectedItem is not System.Windows.Controls.ComboBoxItem { Tag: string family })
             return;
         await ExecAsync("fontName", family);
+        await RichEditor.CoreWebView2.ExecuteScriptAsync("commitFontPreview()");
+    }
+
+    private async void FontComboItem_MouseEnter(object sender, System.Windows.Input.MouseEventArgs e)
+    {
+        if (!_editorReady || sender is not System.Windows.Controls.ComboBoxItem { Tag: string family })
+            return;
+        await RichEditor.CoreWebView2.ExecuteScriptAsync($"previewFontName({System.Text.Json.JsonSerializer.Serialize(family)})");
+    }
+
+    private async void FontCombo_DropDownClosed(object sender, EventArgs e)
+    {
+        if (!_editorReady)
+            return;
+        await RichEditor.CoreWebView2.ExecuteScriptAsync("cancelFontPreview()");
     }
 
     /// <summary>
@@ -1307,7 +1394,7 @@ public partial class ComposeWindow : Window
 
     private void Link_Click(object sender, RoutedEventArgs e)
     {
-        LinkBar.Visibility = Visibility.Visible;
+        LinkBar.SlideDownReveal(140, fromOffset: -6);
         LinkBox.Text = "https://";
         LinkBox.Focus();
         LinkBox.CaretIndex = LinkBox.Text.Length;
@@ -1316,7 +1403,7 @@ public partial class ComposeWindow : Window
     private async void InsertLink_Click(object sender, RoutedEventArgs e)
     {
         var url = LinkBox.Text.Trim();
-        LinkBar.Visibility = Visibility.Collapsed;
+        LinkBar.SlideUpHide(110, toOffset: -6);
 
         // Only ever produce links the viewer can safely follow — a javascript: or data: href
         // typed in here would otherwise be handed straight to the recipient.
@@ -1332,7 +1419,7 @@ public partial class ComposeWindow : Window
         await ExecAsync("createLink", parsed.AbsoluteUri);
     }
 
-    private void CancelLink_Click(object sender, RoutedEventArgs e) => LinkBar.Visibility = Visibility.Collapsed;
+    private void CancelLink_Click(object sender, RoutedEventArgs e) => LinkBar.SlideUpHide(110, toOffset: -6);
 
     // ---- Plain text mode ----------------------------------------------------------------------
 
@@ -1654,7 +1741,7 @@ public partial class ComposeWindow : Window
     private void HideCc_Click(object sender, MouseButtonEventArgs e)
     {
         CcBox.Clear();
-        CcRow.Visibility = Visibility.Collapsed;
+        CcRow.SlideUpHide(110, toOffset: -6);
         CcRowDivider.Visibility = Visibility.Collapsed;
         CcToggle.Visibility = Visibility.Visible;
         UpdateToggleSeparator();
@@ -1663,7 +1750,7 @@ public partial class ComposeWindow : Window
     private void HideBcc_Click(object sender, MouseButtonEventArgs e)
     {
         BccBox.Clear();
-        BccRow.Visibility = Visibility.Collapsed;
+        BccRow.SlideUpHide(110, toOffset: -6);
         BccRowDivider.Visibility = Visibility.Collapsed;
         BccToggle.Visibility = Visibility.Visible;
         UpdateToggleSeparator();
@@ -1686,7 +1773,7 @@ public partial class ComposeWindow : Window
         {
             if (LinkBar.Visibility == Visibility.Visible)
             {
-                LinkBar.Visibility = Visibility.Collapsed;
+                LinkBar.SlideUpHide(110, toOffset: -6);
                 e.Handled = true;
                 return;
             }
@@ -1801,6 +1888,11 @@ public partial class ComposeWindow : Window
     protected override void OnClosing(CancelEventArgs e)
     {
         base.OnClosing(e);
+        // Detach ownership before the native window actually closes — WPF has a long-standing quirk
+        // (WindowStyle="None" + WindowChrome + Owner set) where closing an owned window can send the
+        // owner a minimize along with it. Owner is still legal to clear while Closing is in flight;
+        // the window is destroyed right after this returns, so there's nothing left to reparent.
+        Owner = null;
         _autosaveTimer.Stop();
         _autosaveTimer.Tick -= AutosaveTimer_Tick;
         if (_editorReady)

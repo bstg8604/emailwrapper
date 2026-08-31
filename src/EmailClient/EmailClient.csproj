@@ -11,8 +11,24 @@
     <AssemblyTitle>Purplemail</AssemblyTitle>
     <Product>Purplemail</Product>
     <Description>A desktop email client for IIT Bombay webmail (IMAP/SMTP).</Description>
-    <Version>1.0.0</Version>
+    <Version>1.0.4</Version>
+    <AssemblyVersion>1.0.4.0</AssemblyVersion>
+    <FileVersion>1.0.4.0</FileVersion>
+    <InformationalVersion>1.0.4</InformationalVersion>
+    <Company>Purplemail</Company>
+    <Authors>Purplemail</Authors>
+    <Copyright>Copyright © 2026</Copyright>
     <NeutralLanguage>en</NeutralLanguage>
+
+    <!-- The exe is what the Run key registers and what the installer ships, so it should carry the
+         product name rather than the project's original one. -->
+    <AssemblyName>Purplemail</AssemblyName>
+    <RootNamespace>EmailClient</RootNamespace>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <!-- NuGet packages ship IntelliSense XML alongside their DLLs; those are for developers
+         referencing the package, and have no business in an end-user install. -->
+    <PublishDocumentationFile>false</PublishDocumentationFile>
+    <PublishReferencesDocumentationFiles>false</PublishReferencesDocumentationFiles>
   </PropertyGroup>
 
   <ItemGroup>

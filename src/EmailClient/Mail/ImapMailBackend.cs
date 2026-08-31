@@ -1,5 +1,6 @@
-using System.IO;
+﻿using System.IO;
 using EmailClient.Automation;
+using EmailClient.Diagnostics;
 using EmailClient.UI;
 using MailKit;
 using MailKit.Net.Imap;
@@ -49,6 +50,26 @@ public sealed class ImapMailBackend : IAsyncDisposable
     public event Action? MailboxActivity;
 
     /// <summary>
+    /// Raised (on a background thread) when the push/poll/offline situation changes, so the UI can
+    /// say so. Until this existed, IDLE could be abandoned for the whole session without a trace.
+    /// </summary>
+    public event Action<ConnectionState>? ConnectionStateChanged;
+
+    private ConnectionState _connectionState = ConnectionState.Connecting;
+
+    /// <summary>Latest known connection state; only raises the event when it actually changes.</summary>
+    public ConnectionState State => _connectionState;
+
+    private void SetState(ConnectionState state)
+    {
+        if (_connectionState == state)
+            return;
+        _connectionState = state;
+        Log.Info($"Connection state: {state}");
+        ConnectionStateChanged?.Invoke(state);
+    }
+
+    /// <summary>
     /// Starts (or restarts, if already running against a different mailbox) a background IDLE loop
     /// watching <paramref name="mailbox"/>. Safe to call repeatedly — e.g. every time the user
     /// switches folders — since it always tears down any previous loop first.
@@ -92,6 +113,7 @@ public sealed class ImapMailBackend : IAsyncDisposable
                 // Reached IDLE at all, so the connection/login/open sequence genuinely works —
                 // resets the breaker so a later transient blip doesn't inherit an unrelated streak.
                 consecutiveFailures = 0;
+                SetState(ConnectionState.Push);
 
                 void OnCountChanged(object? s, EventArgs e) => MailboxActivity?.Invoke();
                 folder.CountChanged += OnCountChanged;
@@ -122,13 +144,15 @@ public sealed class ImapMailBackend : IAsyncDisposable
             {
                 // Requested shutdown (folder switch or sign-out) — exit quietly.
             }
-            catch (Exception)
+            catch (Exception ex)
             {
                 // Transient failure (network blip, server hiccup, or the server just doesn't allow
                 // a second session) — back off and reconnect rather than letting the whole loop
                 // die immediately; the 60-second poll timer still covers new mail regardless. But
                 // give up for good once MaxConsecutiveIdleFailures is hit (see its own comment).
                 consecutiveFailures++;
+                Log.Warn($"IMAP IDLE attempt {consecutiveFailures}/{MaxConsecutiveIdleFailures} failed", ex);
+                SetState(ConnectionState.Polling);
                 if (consecutiveFailures >= MaxConsecutiveIdleFailures)
                     break;
                 try
@@ -154,6 +178,15 @@ public sealed class ImapMailBackend : IAsyncDisposable
                     _idleClient = null;
             }
         }
+
+        // Falling out of the loop without cancellation means the breaker tripped: push is gone for
+        // the rest of this session and the 60-second poll is now the only thing finding new mail.
+        // That used to happen in complete silence.
+        if (!token.IsCancellationRequested)
+        {
+            Log.Warn($"Giving up on IMAP IDLE after {MaxConsecutiveIdleFailures} consecutive failures — falling back to polling.");
+            SetState(ConnectionState.Polling);
+        }
     }
 
     // Caches the last opened message so downloading one of its attachments doesn't need a second
@@ -170,6 +203,8 @@ public sealed class ImapMailBackend : IAsyncDisposable
 
     public async Task ConnectAsync()
     {
+        SetState(ConnectionState.Connecting);
+        Log.Info($"Connecting to {_account.ImapHost}:{_account.ImapPort} as {_account.LoginName}");
         await _imap.ConnectAsync(_account.ImapHost, _account.ImapPort, SecureSocketOptions.SslOnConnect);
         // Deliberately not caught/rewrapped here: MailErrors.Friendly() already has a dedicated
         // "wrong email or password" message for AuthenticationException. Wrapping it into
@@ -192,6 +227,11 @@ public sealed class ImapMailBackend : IAsyncDisposable
         // one that also left the message list showing whatever was there before (stale sample
         // data) since the exception aborted the refresh before it could clear it.
         await _contacts.BuildAsync(_imap, _account.Email);
+
+        // Push only counts once the IDLE loop actually reaches IDLE — it reports that itself. Until
+        // then (or if it already gave up) the 60-second poll is what's finding mail.
+        SetState(_idleClient is { IsConnected: true } ? ConnectionState.Push : ConnectionState.Polling);
+        Log.Info("Connected.");
     }
 
     private async Task IndexFoldersAsync()
@@ -388,15 +428,20 @@ public sealed class ImapMailBackend : IAsyncDisposable
                 return;
         }
 
+        // Getting here means the live connection is gone or unusable.
+        SetState(ConnectionState.Offline);
+        Log.Info("IMAP connection lost or mailbox deselected — reconnecting.");
+
         var wantedMailbox = _currentMailbox;
         try
         {
             if (_imap.IsConnected)
                 await _imap.DisconnectAsync(true);
         }
-        catch (Exception)
+        catch (Exception ex)
         {
             // Best-effort cleanup before reconnecting from scratch.
+            Log.Debug("Disconnect before reconnect failed: " + ex.Message);
         }
 
         await ConnectAsync();
@@ -410,9 +455,10 @@ public sealed class ImapMailBackend : IAsyncDisposable
                 _current = folder;
                 _currentMailbox = folder.FullName;
             }
-            catch (Exception)
+            catch (Exception ex)
             {
                 // Falls back to whatever ConnectAsync already opened (Inbox).
+                Log.Warn($"Couldn't reopen '{wantedMailbox}' after reconnecting", ex);
             }
         }
     }

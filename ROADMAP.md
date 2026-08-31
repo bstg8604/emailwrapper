@@ -86,29 +86,75 @@ Currently `UseMockData = true` in `MainWindow.xaml.cs` short-circuits almost eve
   on-campus/VPN use.
 - **Saved/advanced search** — filters by from/to/subject/date range/has-attachment/folder, with the ability to save a search as a quick filter (extending the existing `FilterMessage`/quick-filter-chip mechanism in `MainWindow.xaml.cs`).
 - **Filters/rules** — "when mail matches X, do Y" (Outlook rules / Gmail filters) — IMAP has no built-in rule engine, so this means reimplementing rule matching locally on top of fetched mail, or driving Sieve if the server exposes ManageSieve.
-- **Desktop notification actions** — Windows toast with inline "Archive"/"Reply" actions, not just a plain balloon (current `TrayIcon.ShowBalloon` is text-only).
-- **Taskbar unread badge overlay** on the app's taskbar icon (Outlook/Mail app convention), in addition to the existing sidebar unread count.
+- ✅ **Desktop notifications for new mail** — every arrival raises a notification (on Windows 10/11
+  the shell renders a `NotifyIcon` balloon as a real toast, so this needs no packaged identity).
+  `Mail/NewMailNotifier.cs` decides what to announce: it tracks message ids instead of the old
+  "top row changed" guess, so a burst of five announces all five, a delete-then-refresh announces
+  nothing, and the first page after sign-in is treated as history rather than news. Clicking the
+  notification restores the window and opens that message. Unit-tested (`NewMailNotifierTests`).
+- **Notification actions** — inline "Archive"/"Reply" buttons on the toast. Still open: this needs
+  `CommunityToolkit.WinUI.Notifications` plus a TFM bump and a COM activator to work unpackaged,
+  which is a bigger change than the notification itself.
+- ✅ **Taskbar unread badge overlay** (`UI/TaskbarBadge.cs`) — the unread count drawn onto the
+  taskbar button, plus the same count on the tray icon's hover tooltip, so it stays readable while
+  the window is hidden and the toast has expired.
 
 ### Tier 3 — Polish & power-user niceties
-- **Dark mode** + accent color picker (the palette is centralized enough in `MainWindow.xaml`'s resource dictionary to theme relatively cleanly).
+- **Dark mode** — *groundwork done, feature backed out.* The premise above was wrong: the palette
+  was not centralized, it was 259 hardcoded hex values across six XAML files. Those are now 36
+  semantic tokens in `Themes/Palette.Light.xaml`, referenced by `DynamicResource` everywhere, so
+  an alternative palette is a drop-in. A dark palette was built on top and removed: it loaded, but
+  the main window never became visible, and light is what actually gets used day to day. Whoever
+  picks this up starts from a real palette rather than a search-and-replace.
+- **Accent colour picker** — now a small change: one token.
 - **Density toggle** — compact/comfortable/cozy message list rows (Gmail).
 - **Zoom/font-size control** for the reading pane.
 - **Multiple compose windows** open simultaneously (currently `ComposeWindow` is a modal `ShowDialog`, blocking the main window — Gmail/Outlook allow several drafts open at once as non-modal, possibly minimizable, windows).
 - **Pop-out reading pane** to its own window (Gmail "open in new window").
 - **Jump list** (right-click taskbar icon → "Compose new message" shortcut).
-- **Single-instance enforcement** — launching the exe again should focus the existing window/tray icon instead of opening a second instance.
-- **Local message cache for offline reading** — persist fetched messages (e.g. SQLite or a simple JSON store) keyed by IMAP `UIDVALIDITY`+UID, so recently read mail is viewable without a live connection.
-- ✅ **Settings page** exists on the account page (undo-send delay, manage muted senders) —
-  still missing: notifications on/off, sound, theme, density, reading-pane position,
-  keyboard-shortcut reference, start-with-Windows toggle, about/version.
-- **Start with Windows** toggle (registry Run key or a Startup shortcut).
-- **Accessibility** — screen-reader labels on icon-only buttons (compose/star/reply/etc. currently rely on glyphs + tooltip only), high-contrast theme support, full keyboard navigation of the 3-pane layout.
+- ✅ **Single-instance enforcement** (`SingleInstance.cs`) — a mutex plus a named event; a second
+  launch tells the running instance to surface and exits. Matters more now the window hides in the
+  tray, since re-launching is the obvious way to try to get it back.
+- ✅ **Local message cache for offline reading** (`Mail/MessageCache.cs`) — per-account JSON on
+  disk: the first page of each folder plus the last 300 opened bodies. The list is painted from it
+  before the first network call, so signing in isn't a blank window, and a failed sign-in now reads
+  "Offline — showing saved mail" instead of showing nothing. Cleared on sign-out. 9 unit tests.
+- ✅ **Settings page** exists on the account page (undo-send delay, manage muted senders, and a
+  new Notifications & tray block: new-mail notifications on/off, close-to-tray, start-with-Windows)
+  — still missing: theme, density, reading-pane position, about/version. (Sound and banner style
+  are Windows' own per-app notification settings, not something the app can override.)
+- ✅ **Start with Windows** toggle — `Settings/StartupRegistration.cs`, the per-user Run key. The
+  registry is the source of truth rather than a cached bool, since Task Manager's Startup tab can
+  turn it off without the app knowing. Launches with `--tray` so a sign-in start comes up in the
+  tray instead of throwing a window onto a fresh desktop.
+- ✅ **Accessibility — message rows.** Each row now announces as one sentence ("Unread message
+  from Ada. Lunch?. 9:00 AM, starred") instead of four unrelated fragments, and the per-row star
+  and select controls name the row they act on. Combined with the 20 icon-only buttons labelled
+  earlier, the main surfaces are covered. Still open: high-contrast theme support, and full
+  keyboard navigation of the 3-pane layout.
 
 ### Tier 4 — Distribution
-- **App icon/branding** — replace the placeholder `icon.ico` (currently extracted from `imageres.dll`) once a name/identity is chosen.
-- **Installer** — MSIX or an Inno Setup/WiX installer instead of the current `dotnet publish` single-exe, so Start Menu entry, uninstall, and auto-start registration work properly.
-- **Auto-update** — check-for-updates against a release feed (e.g. GitHub Releases, matching the existing `bstg8604/emailwrapper` repo).
-- **App naming** — still deferred per earlier conversation; needs to happen before icon/installer/branding work.
+- ✅ **App icon/branding** — the `imageres.dll` placeholder is gone; `icon.ico` is now the app's own
+  purple envelope mark, generated at nine sizes (16–256) so it stays clean in the tray and taskbar.
+  The exe is `Purplemail.exe` and carries real product/company/version metadata.
+- ✅ **Installer** — `build/Purplemail.iss` (Inno Setup) + `build/publish.ps1`. Per-user install so
+  it needs no elevation, matching the app's per-user settings and HKCU startup entry; Start Menu
+  and optional desktop shortcut; a startup task writing the *same* Run key the in-app checkbox
+  uses; a WebView2 runtime check up front; and an uninstall that deliberately leaves the user's
+  settings, signatures and contacts alone. **Not yet run end to end** — Inno Setup isn't installed
+  on this machine (`winget install --id JRSoftware.InnoSetup -e`); the publish half is verified.
+- ❌ **Code signing** — **decided against (2026-08-31): not needed.** Purplemail is a personal
+  client installed from a local build. SmartScreen only fires on the Mark of the Web, the zone tag
+  Windows attaches to browser downloads — an installer run from disk or a USB stick carries none,
+  so no warning appears. A certificate would cost ~$120–600/yr (the cheap download-a-.pfx option
+  ended in June 2023, when the CA/Browser Forum began requiring FIPS-140-2 hardware keys) to solve
+  a problem that doesn't occur here. Revisit only if the app is ever distributed to other people
+  over the web.
+- **Auto-update** — check-for-updates against a release feed (e.g. GitHub Releases, matching the
+  existing `bstg8604/emailwrapper` repo). Low value while this is a single-user app installed from
+  a local build — re-running `build/publish.ps1` *is* the update.
+- ✅ **App naming** — settled: **Purplemail**, and now carried consistently through the executable
+  name, assembly metadata, icon, installer and tray tooltip.
 
 ## Suggested working order
 
@@ -118,12 +164,14 @@ text with font family/size and live preview, move-to-folder, drafts, signatures,
 (auto + manual). See `PROGRESS.md` for the detailed, current write-up.
 
 **Remaining, in recommended order:**
-1. Rest of Tier 2 — snooze, scheduled send, flag/important marker, advanced search, filters/rules,
-   rich toast notifications, taskbar unread badge.
-2. Tier 3 — dark mode first (the settings page already exists, just needs a theme toggle wired to
-   it), then density, multiple compose windows, offline cache, accessibility.
-3. Tier 4 — naming/branding (app is now named Purplemail; icon/installer still use a placeholder),
-   then icon, installer, auto-update.
+1. Rest of Tier 2 — snooze, scheduled send, flag/important marker, advanced search, filters/rules.
+   (Desktop notifications and the taskbar badge are done as of 2026-08-31; only the toast's inline
+   Archive/Reply *actions* remain, and those need the WinUI notifications package.)
+2. Tier 3 — offline cache and accessibility are done; dark mode has its groundwork (see above).
+   Remaining: density toggle, multiple compose windows, pop-out reading pane, jump list.
+3. Tier 4 — naming, icon, and installer are done; code signing is decided against and auto-update
+   is low value for a single-user app. The only open item is running the installer end to end once
+   Inno Setup is present.
 
 **Known gap worth fixing early in Tier 3:** ✅ done 2026-08-29 — 20 icon-only buttons now carry
 `AutomationProperties.Name`. It paid off immediately: the new move-to-folder flow was verified

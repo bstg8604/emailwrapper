@@ -16,6 +16,106 @@ IMAP/SMTP** — no longer sample-data-only. `UseMockData` still exists as a fall
 day-to-day use since the IMAP rewrite has been against the live account. Builds clean (0 warnings,
 0 errors) throughout this pass.
 
+### Polish pass — diagnostics, resilience, packaging (2026-08-31)
+
+A pass aimed at the difference between "works on my machine" and "is a product."
+
+- **Logging, where there was none** (`Diagnostics/Log.cs`). The app had 111 `catch` blocks and no
+  record of any of them — failures either vanished or wrote a sentence to the status bar that the
+  next refresh overwrote. There is now a rolling log (1 MB, one generation kept) in the app's data
+  folder, written from the connection, send, refresh and IDLE paths, plus a header naming the
+  build, Windows version and .NET version. Reachable from Settings › Diagnostics › Open log file.
+- **Real crash handling.** The UI-thread handler logged nothing and showed a bare `ex.Message`;
+  background-thread and unobserved-task exceptions weren't handled at all, so a crash off the UI
+  thread was silent. All three are now logged with the full exception chain and stack, and the
+  dialog offers to open the log.
+- **A connection indicator** (`Mail/ConnectionState.cs`, the dot in the toolbar). IMAP IDLE gives
+  up permanently after three consecutive failures — push dies, the 60-second poll silently takes
+  over, and nothing said so. The backend now raises state changes and the dot shows green (push),
+  amber (polling — new mail can take a minute), red (offline, retrying) or grey (signed out), with
+  the explanation on hover. This matters directly for the notification feature: without it, mail
+  quietly stops being announced with nothing on screen saying why.
+- **Offline reading** (`Mail/MessageCache.cs`). Previously, no connection meant an empty window.
+  The first page of each folder and the last 300 opened bodies are cached per account as JSON; the
+  list is painted from cache *before* the first network call, so signing in isn't a blank window,
+  and a failed sign-in reads "Offline — showing saved mail". Cleared on sign-out. 9 unit tests.
+- **The palette is now actually centralized.** `ROADMAP.md` claimed it was; it wasn't — 259
+  hardcoded hex values across six XAML files, against 11 keyed brushes. They are now 36 semantic
+  tokens (`Themes/Palette.Light.xaml`) referenced by `DynamicResource` throughout. Light rendering
+  is unchanged (every light value is the colour that was there before, verified by screenshot).
+- **Dark mode was built and backed out.** The dark palette loaded but left the main window never
+  becoming visible; since light is what gets used, it was removed rather than shipped broken. The
+  token work above is the part that was worth keeping — a second palette is now a drop-in.
+- **A real icon.** The placeholder extracted from `imageres.dll` is replaced by the app's own
+  purple envelope mark, generated at nine sizes (16–256) so it holds up in the tray and taskbar.
+- **Packaging.** `build/publish.ps1` + `build/Purplemail.iss`: a per-user Inno Setup install (no
+  elevation, matching the app's per-user settings and HKCU startup entry), Start Menu and optional
+  desktop shortcuts, a startup task writing the same Run key the in-app checkbox uses, a WebView2
+  runtime check, and an uninstall that leaves the user's settings and signatures alone. The exe is
+  now `Purplemail.exe` with real version/product metadata.
+- **Accessibility on the message list.** Rows announced as four unrelated fragments; each row is
+  now one sentence including read state, and the per-row star and select controls name the row
+  they act on.
+- **`MainWindow.xaml.cs` split** from 3,629 lines into six partial files by existing section
+  (core/lifecycle, message list, folders, reading, compose, shortcuts). Purely a move — partial
+  classes are a compile-time construct, so a clean build is proof of equivalence.
+- **Fixed:** `ClampedUndoSendSeconds` was being serialized into `settings.json` as a phantom key
+  nothing reads back (it has no setter), inviting edits to the one that does nothing. `[JsonIgnore]`.
+
+**Verified:** build clean, 41 tests passing, published Release build launches with correct version
+metadata, light UI screenshot-compared against a clean `HEAD` worktree to confirm the colour sweep
+changed nothing visible. **Not verified:** the installer itself — Inno Setup isn't installed here
+(`winget install --id JRSoftware.InnoSetup -e`); the publish half runs and produces a 12 MB payload.
+
+### Notifications & tray residency (2026-08-31)
+
+Purplemail is now a proper background mail client: it stays in the tray, and it tells you when
+mail arrives.
+
+- **A notification on every arrival.** `Mail/NewMailNotifier.cs` owns the "what's actually new"
+  decision, replacing the old inline test (*the top row's id changed and it's unread*). That test
+  announced at most one message — a burst of five produced one toast — and it fired on a
+  delete-then-refresh, because deleting the top message promotes an older unread one into its
+  place. The notifier tracks seen ids instead (bounded to 2000, so a long session can't grow it
+  without limit), which gets all of it right: every new unread row is announced, a re-appearing
+  message isn't announced twice, and the first page after sign-in is treated as history rather
+  than as news. One message reads `Ada: Lunch?`; five read `5 new messages` with the newest three
+  listed and `and 2 more`. Announcing is Inbox-only — the same page-changed signal in Trash or
+  Sent means a message was *moved* there.
+- Delivery is `NotifyIcon.ShowBalloonTip`, which Windows 10/11 renders as a real toast that lands
+  in the Action Center. Deliberately not the WinUI toast package: that needs a TFM bump and a COM
+  activator to work in an unpackaged app, and it buys nothing until the toast has action buttons.
+- **Clicking the notification** restores the window and selects that message.
+- **The window survives being closed.** Close and minimise both hide to the tray (close-to-tray is
+  now a setting, so X can be made to genuinely quit). The first time it hides, a notification says
+  where it went — an app that vanishes from screen *and* taskbar with no explanation reads as a
+  crash. Restore now returns to the state it was hidden at; it used to force `Normal`, quietly
+  un-maximising a maximised window on every trip to the tray.
+- **The unread count stays visible while hidden** — on the tray icon's tooltip and as a taskbar
+  badge overlay (`UI/TaskbarBadge.cs`, drawn at 32px and scaled down so the digits survive
+  high-DPI).
+- **Single instance** (`SingleInstance.cs`). With the window hidden in the tray, re-launching from
+  the Start menu is the obvious way to try to get it back — which used to start a second client
+  fighting the first over IMAP IDLE and settings.json. A mutex answers "am I first?"; a named event
+  is how the second instance says "come to the front" before exiting. `App.xaml`'s `StartupUri` was
+  dropped so the duplicate case can bail out before a window is ever built.
+- **Start with Windows** (`Settings/StartupRegistration.cs`) — per-user Run key, registered with a
+  `--tray` flag so a sign-in launch comes up watching for mail rather than opening a window. The
+  registry is read live rather than mirrored into settings.json, because Task Manager's Startup tab
+  can turn it off without the app being involved.
+- **Settings UI** for all of it on the account page: notifications on/off, close-to-tray, start with
+  Windows. Sound and banner style are pointed at Windows' own per-app notification settings, which
+  is where they actually live — the app can't override them.
+
+**Verified end-to-end** (real process, not just a build): the app launches; closing the window
+leaves the process alive with no main window (`TrayHintShown: true` in settings.json confirms the
+hide-to-tray notification fired); re-launching restores that same PID's window instead of starting
+a second process. `NewMailNotifier` has 13 unit tests covering the burst, delete-then-refresh,
+first-page, and re-appearing-message cases. Suite: 32 passing, build clean.
+
+**Not verified:** the new-mail toast itself, which needs live mail arriving — the decision logic is
+unit-tested, but the toast has not been seen on screen.
+
 ### Built and working since the last full write-up
 - **IMAP IDLE push** replaced the old 60-second poll — a dedicated second IMAP connection
   (`_idleClient` in `Mail/ImapMailBackend.cs`) sits in IDLE and fires `OnMailboxActivity` the

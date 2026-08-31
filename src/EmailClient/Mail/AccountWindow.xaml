@@ -1,11 +1,12 @@
-<Window x:Class="EmailClient.Mail.AccountWindow"
+﻿<Window x:Class="EmailClient.Mail.AccountWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
+        xmlns:ui="clr-namespace:EmailClient.UI"
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         Title="Your account" Width="640" MinWidth="620" Height="576" MinHeight="440"
         WindowStyle="None" ResizeMode="CanResize" WindowStartupLocation="CenterOwner"
-        Background="White" FontFamily="Segoe UI">
+        Background="{DynamicResource SurfaceCard}" FontFamily="Segoe UI">
 
     <!-- A real Window (WindowStyle=None + WindowChrome), not a Popup — WPF Popups can't reliably
          composite rounded-corner transparency around a windowed native control, and this hosts
@@ -24,20 +25,20 @@
              colour) — now just references it directly. -->
         <Style x:Key="Label" TargetType="TextBlock">
             <Setter Property="FontSize" Value="11.5"/>
-            <Setter Property="Foreground" Value="#FF888888"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextMuted}"/>
             <Setter Property="Margin" Value="0,0,0,3"/>
         </Style>
         <Style x:Key="SectionHeader" TargetType="TextBlock">
             <Setter Property="FontSize" Value="15"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
-            <Setter Property="Foreground" Value="#FF2A2A2E"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
             <Setter Property="Margin" Value="0,0,0,14"/>
         </Style>
         <Style x:Key="WindowGlyphButton" TargetType="Button">
             <Setter Property="Width" Value="38"/>
             <Setter Property="Height" Value="38"/>
             <Setter Property="Background" Value="Transparent"/>
-            <Setter Property="Foreground" Value="#FF3C3C3C"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextBody}"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="FontFamily" Value="Segoe Fluent Icons, Segoe MDL2 Assets"/>
             <Setter Property="FontSize" Value="10"/>
@@ -49,8 +50,8 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#FFE81123"/>
-                                <Setter TargetName="Bd" Property="TextElement.Foreground" Value="White"/>
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Danger}"/>
+                                <Setter TargetName="Bd" Property="TextElement.Foreground" Value="{DynamicResource TextOnAccent}"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -69,15 +70,15 @@
             <Setter Property="Background" Value="Transparent"/>
             <Style.Triggers>
                 <Trigger Property="IsMouseOver" Value="True">
-                    <Setter Property="Background" Value="#FFF0EAFA"/>
+                    <Setter Property="Background" Value="{DynamicResource AccentSoft}"/>
                 </Trigger>
             </Style.Triggers>
         </Style>
 
         <Style x:Key="PrimaryActionButton" TargetType="Button">
             <Setter Property="Padding" Value="0,10"/>
-            <Setter Property="Background" Value="{StaticResource ThemeAccent}"/>
-            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="Background" Value="{DynamicResource ThemeAccent}"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextOnAccent}"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="Template">
@@ -102,9 +103,9 @@
         <Style x:Key="OutlineActionButton" TargetType="Button">
             <Setter Property="Padding" Value="12,10"/>
             <Setter Property="Background" Value="Transparent"/>
-            <Setter Property="Foreground" Value="{StaticResource ThemeAccent}"/>
+            <Setter Property="Foreground" Value="{DynamicResource ThemeAccent}"/>
             <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="BorderBrush" Value="#FFDCD5EF"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderStrong}"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="Template">
                 <Setter.Value>
@@ -115,7 +116,7 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#FFF6F3FC"/>
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource AccentSoft}"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -131,7 +132,7 @@
             <Setter Property="Height" Value="26"/>
             <Setter Property="Margin" Value="0,0,2,0"/>
             <Setter Property="Background" Value="Transparent"/>
-            <Setter Property="Foreground" Value="#FF444444"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextBody}"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="Template">
@@ -142,7 +143,7 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#FFEDE8F8"/>
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource AccentSoft}"/>
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter TargetName="Bd" Property="Opacity" Value="0.35"/>
@@ -154,8 +155,8 @@
         </Style>
 
         <Style x:Key="ListRow" TargetType="Border">
-            <Setter Property="Background" Value="White"/>
-            <Setter Property="BorderBrush" Value="#FFECEAF2"/>
+            <Setter Property="Background" Value="{DynamicResource SurfaceCard}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource SurfaceSunken}"/>
             <Setter Property="BorderThickness" Value="0,0,0,1"/>
             <Setter Property="Padding" Value="10,8"/>
         </Style>
@@ -163,21 +164,21 @@
 
     <!-- Visibly darker edge (no OS drop shadow on a WindowStyle="None" + WindowChrome window,
          unlike a normal window) — the same fix used elsewhere in the app (see MainWindow.xaml). -->
-    <Border BorderBrush="#FFB6B6C0" BorderThickness="1" CornerRadius="8">
-    <Grid Background="#FFF6F5F9">
+    <Border BorderBrush="{DynamicResource TextDisabled}" BorderThickness="1" CornerRadius="8">
+    <Grid Background="{DynamicResource SurfaceApp}">
             <Grid.RowDefinitions>
                 <RowDefinition Height="38"/>
                 <RowDefinition Height="*"/>
             </Grid.RowDefinitions>
 
-            <Grid Grid.Row="0" Background="White">
+            <Grid Grid.Row="0" Background="{DynamicResource SurfaceCard}">
                 <TextBlock Text="Your account" Margin="16,0,0,0" VerticalAlignment="Center"
-                           Foreground="#FF555555" FontSize="12.5" FontWeight="SemiBold"/>
+                           Foreground="{DynamicResource TextSecondary}" FontSize="12.5" FontWeight="SemiBold"/>
                 <Button Content="&#xE8BB;" Style="{StaticResource WindowGlyphButton}" HorizontalAlignment="Right"
                         shell:WindowChrome.IsHitTestVisibleInChrome="True"
                         AutomationProperties.Name="Close" Click="CancelButton_Click"/>
             </Grid>
-            <Border Grid.Row="0" VerticalAlignment="Bottom" Height="1" Background="#FFF0F0F0"/>
+            <Border Grid.Row="0" VerticalAlignment="Bottom" Height="1" Background="{DynamicResource SurfaceSunken}"/>
 
             <Grid Grid.Row="1" Margin="14,14,14,14">
                 <Grid.ColumnDefinitions>
@@ -223,17 +224,24 @@
                             <TextBlock Text="Help" FontSize="12.5" Margin="6,0,0,0"/>
                         </StackPanel>
                     </Border>
+                    <Border x:Name="NavAbout" Style="{StaticResource NavRow}" MouseLeftButtonUp="NavAbout_Click">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="&#xE946;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="14" Width="20"/>
+                            <TextBlock Text="About" FontSize="12.5" Margin="6,0,0,0"/>
+                        </StackPanel>
+                    </Border>
                 </StackPanel>
 
                 <!-- Content — fills whatever the window's own height is (resized via the native
                      OS resize border now, not a hand-rolled grip), so switching sidebar pages
                      doesn't resize anything; shorter pages just leave blank space below. -->
-                <ScrollViewer x:Name="ContentScroller" Grid.Column="1" VerticalScrollBarVisibility="Auto">
+                <ScrollViewer x:Name="ContentScroller" Grid.Column="1" VerticalScrollBarVisibility="Auto"
+                              ui:SmoothScroll.Enabled="True">
                 <Grid>
 
                     <!-- ============================ Profile ============================ -->
-                    <Border x:Name="ProfilePage" Background="White" CornerRadius="10"
-                            BorderBrush="#FFE7E6EE" BorderThickness="1" Padding="20,18">
+                    <Border x:Name="ProfilePage" Background="{DynamicResource SurfaceCard}" CornerRadius="10"
+                            BorderBrush="{DynamicResource Border}" BorderThickness="1" Padding="20,18">
                         <!-- MaxWidth on the form content, not the card itself — the card (like
                              every other page) still fills available width so there's no gray gutter
                              next to it, but the fields inside stay left-aligned and reasonably
@@ -245,13 +253,13 @@
                                  re-opening this page look like signing in was needed all over again. -->
                             <StackPanel x:Name="ProfileSummaryPanel" Visibility="Collapsed">
                                 <StackPanel Orientation="Horizontal" Margin="0,0,0,18">
-                                    <Border Width="44" Height="44" CornerRadius="22" Background="{StaticResource ThemeAccent}">
-                                        <TextBlock x:Name="ProfileInitial" Foreground="White" FontWeight="SemiBold" FontSize="17"
+                                    <Border Width="44" Height="44" CornerRadius="22" Background="{DynamicResource ThemeAccent}">
+                                        <TextBlock x:Name="ProfileInitial" Foreground="{DynamicResource SurfaceCard}" FontWeight="SemiBold" FontSize="17"
                                                    HorizontalAlignment="Center" VerticalAlignment="Center"/>
                                     </Border>
                                     <StackPanel Margin="12,0,0,0" VerticalAlignment="Center">
                                         <TextBlock x:Name="ProfileEmailText" FontSize="14" FontWeight="SemiBold"/>
-                                        <TextBlock Text="Signed in" FontSize="11.5" Foreground="#FF9A9A9A"/>
+                                        <TextBlock Text="Signed in" FontSize="11.5" Foreground="{DynamicResource TextMuted}"/>
                                     </StackPanel>
                                 </StackPanel>
 
@@ -261,15 +269,15 @@
                                          AutomationProperties.Name="Display name"/>
 
                                 <TextBlock Text="Server settings" Style="{StaticResource Label}" Margin="0,4,0,3"/>
-                                <TextBlock x:Name="ProfileServerText" FontSize="12" Foreground="#FF555555"
+                                <TextBlock x:Name="ProfileServerText" FontSize="12" Foreground="{DynamicResource TextSecondary}"
                                            Margin="0,0,0,18" TextWrapping="Wrap"/>
 
-                                <TextBlock x:Name="ChangePasswordToggle" Text="Change password" Foreground="#FF6D28D9" FontSize="12"
+                                <TextBlock x:Name="ChangePasswordToggle" Text="Change password" Foreground="{DynamicResource Accent}" FontSize="12"
                                            Cursor="Hand" MouseLeftButtonUp="ChangePasswordToggle_Click"/>
 
                                 <StackPanel x:Name="ChangePasswordPanel" Visibility="Collapsed" Margin="0,10,0,0">
                                     <TextBlock Text="Your institute password changed but this app's saved copy hasn't — enter the new one to update it. This doesn't change your actual account password anywhere."
-                                               FontSize="11" Foreground="#FF9A9A9A" TextWrapping="Wrap" Margin="0,0,0,8"/>
+                                               FontSize="11" Foreground="{DynamicResource TextMuted}" TextWrapping="Wrap" Margin="0,0,0,8"/>
                                     <TextBlock Text="New password" Style="{StaticResource Label}"/>
                                     <Grid>
                                         <PasswordBox x:Name="NewPasswordBox" Style="{StaticResource ThemeDialogPasswordField}"
@@ -285,7 +293,7 @@
                                                 <ControlTemplate TargetType="ToggleButton">
                                                     <Border Background="{TemplateBinding Background}" CornerRadius="5">
                                                         <TextBlock x:Name="Glyph" Text="&#xE7B3;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
-                                                                   FontSize="13" Foreground="#FF888888" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                                   FontSize="13" Foreground="{DynamicResource TextMuted}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                                                     </Border>
                                                     <ControlTemplate.Triggers>
                                                         <Trigger Property="IsChecked" Value="True">
@@ -357,7 +365,7 @@
                                         <ControlTemplate TargetType="ToggleButton">
                                             <Border Background="{TemplateBinding Background}" CornerRadius="5">
                                                 <TextBlock x:Name="Glyph" Text="&#xE7B3;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
-                                                           FontSize="13" Foreground="#FF888888" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                           FontSize="13" Foreground="{DynamicResource TextMuted}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                                             </Border>
                                             <ControlTemplate.Triggers>
                                                 <Trigger Property="IsChecked" Value="True">
@@ -369,12 +377,12 @@
                                 </ToggleButton>
                             </Grid>
                             <TextBlock Text="Saved encrypted on this device, tied to your Windows account." FontSize="10.5"
-                                       Foreground="#FFA8A8A8" Margin="0,4,0,10"/>
+                                       Foreground="{DynamicResource TextMuted}" Margin="0,4,0,10"/>
 
-                            <TextBlock x:Name="ErrorText" Foreground="#FFB91C1C" FontSize="12" Margin="0,2,0,10"
+                            <TextBlock x:Name="ErrorText" Foreground="{DynamicResource DangerDeep}" FontSize="12" Margin="0,2,0,10"
                                        TextWrapping="Wrap" Visibility="Collapsed"/>
 
-                            <TextBlock x:Name="AdvancedToggle" Text="Not from IIT Bombay?" Foreground="#FF6D28D9" FontSize="12"
+                            <TextBlock x:Name="AdvancedToggle" Text="Not from IIT Bombay?" Foreground="{DynamicResource Accent}" FontSize="12"
                                        Cursor="Hand" MouseLeftButtonUp="AdvancedToggle_Click" Margin="0,0,0,10"/>
 
                             <StackPanel x:Name="AdvancedPanel" Visibility="Collapsed">
@@ -411,7 +419,7 @@
                                     </StackPanel>
                                 </Grid>
                                 <TextBlock Text="These default to IITB's servers — replace them with your own provider's IMAP/SMTP host, port and username if you're signing in from somewhere else."
-                                           FontSize="11" Foreground="#FF9A9A9A" TextWrapping="Wrap" Margin="0,2,0,14"/>
+                                           FontSize="11" Foreground="{DynamicResource TextMuted}" TextWrapping="Wrap" Margin="0,2,0,14"/>
                             </StackPanel>
 
                             <Grid>
@@ -439,21 +447,21 @@
                                      versus just stuck; the spin gives an unambiguous "this is still
                                      working" signal. -->
                                 <Ellipse x:Name="BusySpinner" Width="12" Height="12" Margin="0,0,6,0" Visibility="Collapsed"
-                                         Stroke="{StaticResource ThemeAccent}" StrokeThickness="2"
+                                         Stroke="{DynamicResource ThemeAccent}" StrokeThickness="2"
                                          StrokeDashArray="2.2 1.4" RenderTransformOrigin="0.5,0.5">
                                     <Ellipse.RenderTransform>
                                         <RotateTransform x:Name="BusySpinnerRotation"/>
                                     </Ellipse.RenderTransform>
                                 </Ellipse>
-                                <TextBlock x:Name="StatusText" FontSize="11.5" Foreground="#FF9A9A9A"/>
+                                <TextBlock x:Name="StatusText" FontSize="11.5" Foreground="{DynamicResource TextMuted}"/>
                             </StackPanel>
                             </StackPanel>
                         </StackPanel>
                     </Border>
 
                     <!-- ============================ Signature ============================ -->
-                    <Border x:Name="SignaturePage" Background="White" CornerRadius="10"
-                            BorderBrush="#FFE7E6EE" BorderThickness="1" Padding="18,16" Visibility="Collapsed">
+                    <Border x:Name="SignaturePage" Background="{DynamicResource SurfaceCard}" CornerRadius="10"
+                            BorderBrush="{DynamicResource Border}" BorderThickness="1" Padding="18,16" Visibility="Collapsed">
                         <StackPanel>
                             <Grid Margin="0,0,0,10">
                                 <Grid.ColumnDefinitions>
@@ -477,7 +485,7 @@
                                          TextChanged="SignatureNameBox_TextChanged" AutomationProperties.Name="Signature name"/>
 
                                 <TextBlock Text="Signature" Style="{StaticResource Label}" Margin="0,10,0,3"/>
-                                <Border Background="#FFF9F9FB" BorderBrush="#FFE2E2E8" BorderThickness="1" CornerRadius="6" Padding="4">
+                                <Border Background="{DynamicResource SurfaceAlt}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="6" Padding="4">
                                     <StackPanel>
                                         <WrapPanel Orientation="Horizontal" Margin="2,0,0,4">
                                             <Button Style="{StaticResource SigFormatButton}" Click="Bold_Click" ToolTip="Bold" AutomationProperties.Name="Bold">
@@ -496,7 +504,7 @@
                                                     <TextBlock.TextDecorations><TextDecoration Location="Strikethrough"/></TextBlock.TextDecorations>
                                                 </TextBlock>
                                             </Button>
-                                            <Border Width="1" Height="16" Background="#FFE2E2E8" Margin="4,0" VerticalAlignment="Center"/>
+                                            <Border Width="1" Height="16" Background="{DynamicResource Border}" Margin="4,0" VerticalAlignment="Center"/>
                                             <!-- Hovering an option previews it live in the editor, same as Compose's
                                                  font picker — MouseEnter drives the preview, DropDownClosed cancels
                                                  whatever's still only previewed if closed without a click. -->
@@ -527,7 +535,7 @@
                                                 <ComboBoxItem Content="24"/>
                                                 <ComboBoxItem Content="36"/>
                                             </ComboBox>
-                                            <Border Width="1" Height="16" Background="#FFE2E2E8" Margin="4,0" VerticalAlignment="Center"/>
+                                            <Border Width="1" Height="16" Background="{DynamicResource Border}" Margin="4,0" VerticalAlignment="Center"/>
                                             <!-- From here down, same order as Compose's toolbar: align, then colours,
                                                  then lists, then link, then indent/quote, then clear formatting. -->
                                             <Button Style="{StaticResource SigFormatButton}" Click="AlignLeft_Click" ToolTip="Align left"
@@ -539,32 +547,32 @@
                                             <Button Style="{StaticResource SigFormatButton}" Click="AlignRight_Click" ToolTip="Align right"
                                                     AutomationProperties.Name="Align right" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
                                                     Content="&#xE8E2;" FontSize="13"/>
-                                            <Border Width="1" Height="16" Background="#FFE2E2E8" Margin="4,0" VerticalAlignment="Center"/>
+                                            <Border Width="1" Height="16" Background="{DynamicResource Border}" Margin="4,0" VerticalAlignment="Center"/>
                                             <Button x:Name="TextColourButton" Style="{StaticResource SigFormatButton}" Click="TextColourButton_Click"
                                                     ToolTip="Text colour" AutomationProperties.Name="Text colour">
                                                 <StackPanel>
                                                     <TextBlock Text="A" FontSize="13" HorizontalAlignment="Center"/>
-                                                    <Border x:Name="TextColourSwatch" Height="3" Width="16" Background="#FF6D28D9"/>
+                                                    <Border x:Name="TextColourSwatch" Height="3" Width="16" Background="{DynamicResource Accent}"/>
                                                 </StackPanel>
                                             </Button>
                                             <Button x:Name="HighlightColourButton" Style="{StaticResource SigFormatButton}" Click="HighlightColourButton_Click"
                                                     ToolTip="Highlight colour" AutomationProperties.Name="Highlight colour">
                                                 <StackPanel>
                                                     <TextBlock Text="&#xE771;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="13" HorizontalAlignment="Center"/>
-                                                    <Border x:Name="HighlightColourSwatch" Height="3" Width="16" Background="#FFFFF176"/>
+                                                    <Border x:Name="HighlightColourSwatch" Height="3" Width="16" Background="{DynamicResource Highlight}"/>
                                                 </StackPanel>
                                             </Button>
-                                            <Border Width="1" Height="16" Background="#FFE2E2E8" Margin="4,0" VerticalAlignment="Center"/>
+                                            <Border Width="1" Height="16" Background="{DynamicResource Border}" Margin="4,0" VerticalAlignment="Center"/>
                                             <Button Style="{StaticResource SigFormatButton}" Click="BulletList_Click" ToolTip="Bulleted list"
                                                     AutomationProperties.Name="Bulleted list" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
                                                     Content="&#xE8FD;" FontSize="13"/>
                                             <Button Style="{StaticResource SigFormatButton}" Click="NumberedList_Click" ToolTip="Numbered list"
                                                     AutomationProperties.Name="Numbered list" Content="1." FontWeight="SemiBold" FontSize="12"/>
-                                            <Border Width="1" Height="16" Background="#FFE2E2E8" Margin="4,0" VerticalAlignment="Center"/>
+                                            <Border Width="1" Height="16" Background="{DynamicResource Border}" Margin="4,0" VerticalAlignment="Center"/>
                                             <Button Style="{StaticResource SigFormatButton}" Click="LinkButton_Click" ToolTip="Insert link"
                                                     AutomationProperties.Name="Insert link" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
                                                     Content="&#xE71B;" FontSize="13"/>
-                                            <Border Width="1" Height="16" Background="#FFE2E2E8" Margin="4,0" VerticalAlignment="Center"/>
+                                            <Border Width="1" Height="16" Background="{DynamicResource Border}" Margin="4,0" VerticalAlignment="Center"/>
                                             <Button Style="{StaticResource SigFormatButton}" Click="Indent_Click" ToolTip="Increase indent"
                                                     AutomationProperties.Name="Increase indent" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
                                                     Content="&#xE76C;" FontSize="13"/>
@@ -573,7 +581,7 @@
                                                     Content="&#xE76B;" FontSize="13"/>
                                             <Button Style="{StaticResource SigFormatButton}" Click="Quote_Click" ToolTip="Block quote"
                                                     AutomationProperties.Name="Block quote" FontFamily="Segoe UI" Content="&#x275D;" FontSize="15"/>
-                                            <Border Width="1" Height="16" Background="#FFE2E2E8" Margin="4,0" VerticalAlignment="Center"/>
+                                            <Border Width="1" Height="16" Background="{DynamicResource Border}" Margin="4,0" VerticalAlignment="Center"/>
                                             <!-- A text label, not the &#xE7A7; glyph — it reads as an undo/refresh
                                                  arrow rather than "clear formatting", easy to mistake for the
                                                  opposite of what it does. -->
@@ -585,7 +593,7 @@
                                             <TextBox x:Name="SignatureLinkBox" Width="200" FontSize="11.5" Padding="5,3"
                                                      KeyDown="SignatureLinkBox_KeyDown" AutomationProperties.Name="Link URL"/>
                                             <Button Content="Insert" FontSize="11" Padding="8,3" Margin="4,0,0,0" Cursor="Hand"
-                                                    Background="{StaticResource ThemeAccent}" Foreground="White" BorderThickness="0"
+                                                    Background="{DynamicResource ThemeAccent}" Foreground="{DynamicResource SurfaceCard}" BorderThickness="0"
                                                     Click="InsertSignatureLink_Click"/>
                                             <Button Content="Cancel" FontSize="11" Padding="8,3" Margin="4,0,0,0" Cursor="Hand"
                                                     Background="Transparent" BorderThickness="0" Click="CancelSignatureLink_Click"/>
@@ -597,7 +605,7 @@
                                           Margin="0,10,0,0" Checked="SignatureDefaultCheck_Changed" Unchecked="SignatureDefaultCheck_Changed"/>
                             </StackPanel>
                             <TextBlock x:Name="SignatureEmptyHint" Text="No signatures yet — click + above to add one."
-                                       FontSize="12" Foreground="#FF9A9A9A" Margin="0,10,0,0" Visibility="Collapsed"/>
+                                       FontSize="12" Foreground="{DynamicResource TextMuted}" Margin="0,10,0,0" Visibility="Collapsed"/>
 
                             <Grid Margin="0,16,0,0">
                                 <Grid.ColumnDefinitions>
@@ -606,15 +614,15 @@
                                 </Grid.ColumnDefinitions>
                                 <Button x:Name="SaveSignaturesButton" Grid.Column="0" Content="Save" Padding="20,10"
                                         Style="{StaticResource PrimaryActionButton}" Click="SaveSignaturesButton_Click"/>
-                                <TextBlock x:Name="SignatureStatusText" Grid.Column="1" FontSize="11.5" Foreground="#FF9A9A9A"
+                                <TextBlock x:Name="SignatureStatusText" Grid.Column="1" FontSize="11.5" Foreground="{DynamicResource TextMuted}"
                                            VerticalAlignment="Center" Margin="10,0,0,0"/>
                             </Grid>
                         </StackPanel>
                     </Border>
 
                     <!-- ============================ Contacts ============================ -->
-                    <Border x:Name="ContactsPage" Background="White" CornerRadius="10"
-                            BorderBrush="#FFE7E6EE" BorderThickness="1" Padding="18,16" Visibility="Collapsed">
+                    <Border x:Name="ContactsPage" Background="{DynamicResource SurfaceCard}" CornerRadius="10"
+                            BorderBrush="{DynamicResource Border}" BorderThickness="1" Padding="18,16" Visibility="Collapsed">
                         <StackPanel>
                             <TextBlock Text="Your contacts" Style="{StaticResource SectionHeader}" Margin="0,0,0,10"/>
                             <Grid Margin="0,0,0,10">
@@ -632,7 +640,7 @@
                                 <Button x:Name="AddContactButton" Grid.Column="2" Content="Add" Style="{StaticResource PrimaryActionButton}"
                                         Padding="16,10" Click="AddContactButton_Click"/>
                             </Grid>
-                            <TextBlock x:Name="ContactsErrorText" Foreground="#FFB91C1C" FontSize="12" Margin="0,0,0,8"
+                            <TextBlock x:Name="ContactsErrorText" Foreground="{DynamicResource DangerDeep}" FontSize="12" Margin="0,0,0,8"
                                        TextWrapping="Wrap" Visibility="Collapsed"/>
 
                             <ItemsControl x:Name="ManualContactsList">
@@ -646,7 +654,7 @@
                                                 </Grid.ColumnDefinitions>
                                                 <StackPanel>
                                                     <TextBlock Text="{Binding Name}" FontSize="12.5" FontWeight="SemiBold"/>
-                                                    <TextBlock Text="{Binding Email}" FontSize="11.5" Foreground="#FF9A9A9A"/>
+                                                    <TextBlock Text="{Binding Email}" FontSize="11.5" Foreground="{DynamicResource TextMuted}"/>
                                                 </StackPanel>
                                                 <StackPanel Grid.Column="1" Orientation="Horizontal">
                                                     <Button Content="&#xE70F;" Style="{StaticResource SigFormatButton}"
@@ -664,18 +672,18 @@
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
                             <TextBlock x:Name="ManualContactsEmptyHint" Text="No contacts added yet." FontSize="12"
-                                       Foreground="#FF9A9A9A" Margin="0,4,0,0" Visibility="Collapsed"/>
+                                       Foreground="{DynamicResource TextMuted}" Margin="0,4,0,0" Visibility="Collapsed"/>
 
                             <TextBlock Text="People you've emailed" Style="{StaticResource SectionHeader}" Margin="0,20,0,10"/>
                             <TextBlock x:Name="LearnedContactsHint" Text="Sign in to see people you've corresponded with."
-                                       FontSize="12" Foreground="#FF9A9A9A" Visibility="Collapsed"/>
+                                       FontSize="12" Foreground="{DynamicResource TextMuted}" Visibility="Collapsed"/>
                             <ItemsControl x:Name="LearnedContactsList">
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate>
                                         <Border Style="{StaticResource ListRow}">
                                             <StackPanel>
                                                 <TextBlock Text="{Binding DisplayName}" FontSize="12.5"/>
-                                                <TextBlock Text="{Binding Address}" FontSize="11.5" Foreground="#FF9A9A9A"/>
+                                                <TextBlock Text="{Binding Address}" FontSize="11.5" Foreground="{DynamicResource TextMuted}"/>
                                             </StackPanel>
                                         </Border>
                                     </DataTemplate>
@@ -685,13 +693,13 @@
                     </Border>
 
                     <!-- ============================ Folders ============================ -->
-                    <Border x:Name="FoldersPage" Background="White" CornerRadius="10"
-                            BorderBrush="#FFE7E6EE" BorderThickness="1" Padding="18,16" Visibility="Collapsed">
+                    <Border x:Name="FoldersPage" Background="{DynamicResource SurfaceCard}" CornerRadius="10"
+                            BorderBrush="{DynamicResource Border}" BorderThickness="1" Padding="18,16" Visibility="Collapsed">
                         <StackPanel>
                             <TextBlock Text="Folders" Style="{StaticResource SectionHeader}"/>
                             <TextBlock x:Name="FoldersSignInHint"
                                        Text="Sign in to create, rename, or delete folders — showing sample folders below."
-                                       FontSize="12" Foreground="#FF9A9A9A" TextWrapping="Wrap" Margin="0,0,0,10" Visibility="Collapsed"/>
+                                       FontSize="12" Foreground="{DynamicResource TextMuted}" TextWrapping="Wrap" Margin="0,0,0,10" Visibility="Collapsed"/>
 
                             <StackPanel x:Name="FoldersEditorPanel">
                                 <!-- Hidden (not just disabled) when signed out — creating a folder
@@ -708,7 +716,7 @@
                                     <Button Grid.Column="1" Content="Create" Style="{StaticResource PrimaryActionButton}"
                                             Padding="16,10" Click="CreateFolderButton_Click"/>
                                 </Grid>
-                                <TextBlock x:Name="FoldersErrorText" Foreground="#FFB91C1C" FontSize="12" Margin="0,0,0,8"
+                                <TextBlock x:Name="FoldersErrorText" Foreground="{DynamicResource DangerDeep}" FontSize="12" Margin="0,0,0,8"
                                            TextWrapping="Wrap" Visibility="Collapsed"/>
 
                                 <!-- Shown instead of a row's own Rename/Delete when a rename is in
@@ -718,7 +726,7 @@
                                     <TextBox x:Name="RenameFolderBox" Width="220" Style="{StaticResource ThemeDialogField}"
                                              KeyDown="RenameFolderBox_KeyDown" AutomationProperties.Name="Rename folder to"/>
                                     <Button Content="Save" FontSize="11.5" Padding="10,6" Margin="6,0,0,0" Cursor="Hand"
-                                            Background="{StaticResource ThemeAccent}" Foreground="White" BorderThickness="0"
+                                            Background="{DynamicResource ThemeAccent}" Foreground="{DynamicResource SurfaceCard}" BorderThickness="0"
                                             Click="ConfirmRenameFolderButton_Click"/>
                                     <Button Content="Cancel" FontSize="11.5" Padding="10,6" Margin="6,0,0,0" Cursor="Hand"
                                             Background="Transparent" BorderThickness="0" Click="CancelRenameFolderButton_Click"/>
@@ -755,8 +763,8 @@
                     </Border>
 
                     <!-- ============================ Settings ============================ -->
-                    <Border x:Name="SettingsPage" Background="White" CornerRadius="10"
-                            BorderBrush="#FFE7E6EE" BorderThickness="1" Padding="18,16" Visibility="Collapsed">
+                    <Border x:Name="SettingsPage" Background="{DynamicResource SurfaceCard}" CornerRadius="10"
+                            BorderBrush="{DynamicResource Border}" BorderThickness="1" Padding="18,16" Visibility="Collapsed">
                         <StackPanel>
                             <TextBlock Text="Settings" Style="{StaticResource SectionHeader}"/>
 
@@ -781,14 +789,14 @@
                                                 </Grid.ColumnDefinitions>
                                                 <StackPanel Orientation="Horizontal">
                                                     <TextBlock Text="{Binding Identity}" FontSize="12.5" VerticalAlignment="Center"/>
-                                                    <Border Background="{StaticResource ThemeAccent}" CornerRadius="8" Padding="6,1"
+                                                    <Border Background="{DynamicResource ThemeAccent}" CornerRadius="8" Padding="6,1"
                                                             Margin="8,0,0,0" VerticalAlignment="Center"
                                                             Visibility="{Binding IsActiveVisibility}">
-                                                        <TextBlock Text="Active" Foreground="White" FontSize="10" FontWeight="SemiBold"/>
+                                                        <TextBlock Text="Active" Foreground="{DynamicResource SurfaceCard}" FontSize="10" FontWeight="SemiBold"/>
                                                     </Border>
                                                 </StackPanel>
                                                 <Button Grid.Column="1" Content="Switch" FontSize="11.5" Padding="10,5" Cursor="Hand"
-                                                        Background="Transparent" Foreground="{StaticResource ThemeAccent}" BorderThickness="0"
+                                                        Background="Transparent" Foreground="{DynamicResource ThemeAccent}" BorderThickness="0"
                                                         Tag="{Binding Email}" Click="SwitchAccountButton_Click"
                                                         Visibility="{Binding SwitchVisibility}"/>
                                                 <Button Grid.Column="2" Content="&#xE74D;" Style="{StaticResource SigFormatButton}"
@@ -801,23 +809,57 @@
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
                             <TextBlock x:Name="NoAccountsHint" Text="No accounts saved yet." FontSize="12"
-                                       Foreground="#FF9A9A9A" Margin="0,0,0,20" Visibility="Collapsed"/>
+                                       Foreground="{DynamicResource TextMuted}" Margin="0,0,0,20" Visibility="Collapsed"/>
 
                             <TextBlock Text="Undo send delay (seconds)" Style="{StaticResource Label}"/>
                             <TextBox x:Name="UndoSendSecondsBox" Style="{StaticResource ThemeDialogField}" Width="80"
                                      HorizontalAlignment="Left" AutomationProperties.Name="Undo send delay"
                                      LostFocus="UndoSendSecondsBox_LostFocus" KeyDown="UndoSendSecondsBox_KeyDown"/>
                             <TextBlock Text="How long Send holds a message, with an Undo option, before it actually goes out. 1–60 seconds."
-                                       FontSize="11" Foreground="#FF9A9A9A" TextWrapping="Wrap" Margin="0,4,0,0"/>
+                                       FontSize="11" Foreground="{DynamicResource TextMuted}" TextWrapping="Wrap" Margin="0,4,0,20"/>
+
+                            <TextBlock Text="Notifications &amp; tray" Style="{StaticResource SectionHeader}"/>
+
+                            <CheckBox x:Name="NotificationsCheck" Margin="0,2,0,0"
+                                      AutomationProperties.Name="Show a notification when new mail arrives"
+                                      Click="NotificationsCheck_Click">
+                                <TextBlock Text="Show a notification when new mail arrives" FontSize="12.5"/>
+                            </CheckBox>
+                            <TextBlock Text="Sound and banner style are controlled by Windows, under Settings › System › Notifications › Purplemail."
+                                       FontSize="11" Foreground="{DynamicResource TextMuted}" TextWrapping="Wrap" Margin="23,4,0,12"/>
+
+                            <CheckBox x:Name="CloseToTrayCheck" Margin="0,2,0,0"
+                                      AutomationProperties.Name="Keep Purplemail in the system tray when the window is closed"
+                                      Click="CloseToTrayCheck_Click">
+                                <TextBlock Text="Keep Purplemail running in the tray when I close the window" FontSize="12.5"/>
+                            </CheckBox>
+                            <TextBlock Text="New mail only reaches you while Purplemail is running. Exit from the tray icon’s right-click menu quits it either way."
+                                       FontSize="11" Foreground="{DynamicResource TextMuted}" TextWrapping="Wrap" Margin="23,4,0,12"/>
+
+                            <CheckBox x:Name="StartWithWindowsCheck" Margin="0,2,0,0"
+                                      AutomationProperties.Name="Start Purplemail when I sign in to Windows"
+                                      Click="StartWithWindowsCheck_Click">
+                                <TextBlock Text="Start Purplemail when I sign in to Windows" FontSize="12.5"/>
+                            </CheckBox>
+                            <TextBlock x:Name="StartWithWindowsHint"
+                                       Text="Starts minimised to the tray, so new mail is announced from sign-in onwards."
+                                       FontSize="11" Foreground="{DynamicResource TextMuted}" TextWrapping="Wrap" Margin="23,4,0,20"/>
+
+                            <TextBlock Text="Diagnostics" Style="{StaticResource SectionHeader}"/>
+                            <Button Content="Open log file" Style="{StaticResource OutlineActionButton}"
+                                    Padding="12,7" HorizontalAlignment="Left"
+                                    AutomationProperties.Name="Open log file" Click="OpenLogButton_Click"/>
+                            <TextBlock Text="A record of what Purplemail has been doing, including connection problems and errors. Useful when reporting a bug."
+                                       FontSize="11" Foreground="{DynamicResource TextMuted}" TextWrapping="Wrap" Margin="0,6,0,0"/>
                         </StackPanel>
                     </Border>
 
                     <!-- ============================ Help ============================ -->
-                    <Border x:Name="HelpPage" Background="White" CornerRadius="10"
-                            BorderBrush="#FFE7E6EE" BorderThickness="1" Padding="18,16" Visibility="Collapsed">
+                    <Border x:Name="HelpPage" Background="{DynamicResource SurfaceCard}" CornerRadius="10"
+                            BorderBrush="{DynamicResource Border}" BorderThickness="1" Padding="18,16" Visibility="Collapsed">
                         <StackPanel>
                             <TextBlock Text="Help" Style="{StaticResource SectionHeader}" Margin="0,0,0,4"/>
-                            <TextBlock Text="KEYBOARD SHORTCUTS" FontSize="10" FontWeight="SemiBold" Foreground="#FFA79BC0" Margin="0,0,0,12"/>
+                            <TextBlock Text="KEYBOARD SHORTCUTS" FontSize="10" FontWeight="SemiBold" Foreground="{DynamicResource AccentMuted}" Margin="0,0,0,12"/>
                             <Grid>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/>
@@ -839,6 +881,64 @@
                                     <TextBlock Text="? — Open Help" Margin="0,4" FontSize="12.5"/>
                                 </StackPanel>
                             </Grid>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- ============================ About ============================ -->
+                    <Border x:Name="AboutPage" Background="{DynamicResource SurfaceCard}" CornerRadius="10"
+                            BorderBrush="{DynamicResource Border}" BorderThickness="1" Padding="18,16" Visibility="Collapsed">
+                        <StackPanel>
+                            <TextBlock Text="About" Style="{StaticResource SectionHeader}"/>
+
+                            <StackPanel Orientation="Horizontal" Margin="0,4,0,16">
+                                <Border Width="56" Height="56" CornerRadius="13" VerticalAlignment="Top">
+                                    <Border.Background>
+                                        <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                                            <GradientStop Color="{DynamicResource AccentLightColor}" Offset="0"/>
+                                            <GradientStop Color="{DynamicResource AccentColor}" Offset="1"/>
+                                        </LinearGradientBrush>
+                                    </Border.Background>
+                                    <TextBlock Text="&#xE715;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                                               FontSize="26" Foreground="{DynamicResource TextOnAccent}"
+                                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
+                                <StackPanel Margin="14,0,0,0" VerticalAlignment="Center">
+                                    <TextBlock Text="Purplemail" FontSize="19" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource TextPrimary}"/>
+                                    <TextBlock x:Name="AboutVersionText" FontSize="12"
+                                               Foreground="{DynamicResource TextMuted}" Margin="0,2,0,0"/>
+                                </StackPanel>
+                            </StackPanel>
+
+                            <TextBlock TextWrapping="Wrap" FontSize="12.5" Foreground="{DynamicResource TextSecondary}"
+                                       LineHeight="19" Margin="0,0,0,18"
+                                       Text="A desktop email client for the IIT Bombay mailbox, talking directly to the server over IMAP and SMTP. It reads and sends real mail, keeps working in the system tray, and announces new messages as they arrive."/>
+
+                            <TextBlock Text="DEVELOPED BY" FontSize="10" FontWeight="SemiBold"
+                                       Foreground="{DynamicResource AccentMuted}" Margin="0,0,0,7"/>
+                            <TextBlock FontSize="13.5" Foreground="{DynamicResource TextPrimary}"
+                                       Text="Shiva Teja Banda"/>
+                            <TextBlock Margin="0,3,0,18" FontSize="12.5">
+                                <Hyperlink x:Name="AuthorLink"
+                                           NavigateUri="https://www.linkedin.com/in/bstg/"
+                                           RequestNavigate="Hyperlink_RequestNavigate"
+                                           Foreground="{DynamicResource Accent}"
+                                           AutomationProperties.Name="Shiva Teja Banda on LinkedIn"
+                                           ToolTip="https://www.linkedin.com/in/bstg/">linkedin.com/in/bstg</Hyperlink>
+                            </TextBlock>
+
+                            <Border Background="{DynamicResource SurfaceSunken}" CornerRadius="8" Padding="12,10">
+                                <StackPanel>
+                                    <TextBlock x:Name="AboutRuntimeText" FontSize="11.5"
+                                               Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap"/>
+                                    <TextBlock x:Name="AboutDataPathText" FontSize="11"
+                                               Foreground="{DynamicResource TextMuted}" TextWrapping="Wrap"
+                                               Margin="0,5,0,0"/>
+                                </StackPanel>
+                            </Border>
+
+                            <TextBlock x:Name="AboutCopyrightText" FontSize="11"
+                                       Foreground="{DynamicResource TextMuted}" Margin="0,14,0,0"/>
                         </StackPanel>
                     </Border>
 

@@ -8,11 +8,8 @@
     checkbox) reads as dated next to the rest of the app's flat, rounded, purple-accented look.
     -->
 
-    <SolidColorBrush x:Key="ThemeAccent" Color="#FF6D28D9"/>
-    <SolidColorBrush x:Key="ThemeAccentSoft" Color="#FFF3EEFC"/>
-    <SolidColorBrush x:Key="ThemeAccentDeep" Color="#FF4C1D95"/>
-    <SolidColorBrush x:Key="ThemeBorder" Color="#FFE2E2E8"/>
-    <SolidColorBrush x:Key="ThemeBorderHover" Color="#FFC9C0E8"/>
+    <!-- The ThemeAccent/ThemeBorder family now lives in Themes/Palette.*.xaml alongside the
+         rest of the palette, so the whole dictionary swaps as one. -->
 
     <!-- Suppresses the default OS keyboard-focus rectangle app-wide; controls that need a visible
          focus state provide their own (see the Field style used by sign-in/signature dialogs). -->
@@ -31,10 +28,10 @@
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="Thumb">
-                    <Border x:Name="Bd" Background="#FFD3D0DC" CornerRadius="3" Margin="1"/>
+                    <Border x:Name="Bd" Background="{DynamicResource ScrollThumb}" CornerRadius="3" Margin="1"/>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="Bd" Property="Background" Value="{StaticResource ThemeAccentDeep}"/>
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource ThemeAccentDeep}"/>
                         </Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>
@@ -104,23 +101,23 @@
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="ToggleButton">
-                    <Border x:Name="Bd" Background="White" BorderBrush="{StaticResource ThemeBorder}"
+                    <Border x:Name="Bd" Background="{DynamicResource SurfaceCard}" BorderBrush="{DynamicResource ThemeBorder}"
                             BorderThickness="1" CornerRadius="7">
                         <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="1" Text="&#x25BE;" Foreground="#FF9A9A9A" FontSize="9"
+                            <TextBlock Grid.Column="1" Text="&#x25BE;" Foreground="{DynamicResource TextMuted}" FontSize="9"
                                        Margin="0,0,9,0" VerticalAlignment="Center"/>
                         </Grid>
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource ThemeBorderHover}"/>
+                            <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource ThemeBorderHover}"/>
                         </Trigger>
                         <Trigger Property="IsChecked" Value="True">
-                            <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource ThemeAccent}"/>
+                            <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource ThemeAccent}"/>
                         </Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>
@@ -129,10 +126,10 @@
     </Style>
 
     <Style TargetType="ComboBox">
-        <Setter Property="Background" Value="White"/>
+        <Setter Property="Background" Value="{DynamicResource SurfaceCard}"/>
         <Setter Property="BorderThickness" Value="0"/>
         <Setter Property="Padding" Value="10,0,0,0"/>
-        <Setter Property="Foreground" Value="#FF333333"/>
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
         <Setter Property="SnapsToDevicePixels" Value="True"/>
         <Setter Property="Template">
             <Setter.Value>
@@ -148,12 +145,12 @@
                                           VerticalAlignment="Center" HorizontalAlignment="Left"/>
                         <Popup x:Name="Popup" Placement="Bottom" AllowsTransparency="True" Focusable="False"
                                PopupAnimation="Slide" IsOpen="{TemplateBinding IsDropDownOpen}">
-                            <Border Background="White" BorderBrush="#FFE2DDF0" BorderThickness="1"
+                            <Border Background="{DynamicResource SurfaceCard}" BorderBrush="{DynamicResource AccentSoft}" BorderThickness="1"
                                     CornerRadius="8" Padding="3" MaxHeight="{TemplateBinding MaxDropDownHeight}"
                                     MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}"
                                     SnapsToDevicePixels="True">
                                 <Border.Effect>
-                                    <DropShadowEffect Color="#FF000000" Opacity="0.15" BlurRadius="16" ShadowDepth="3"/>
+                                    <DropShadowEffect Color="{DynamicResource TextPrimaryColor}" Opacity="0.15" BlurRadius="16" ShadowDepth="3"/>
                                 </Border.Effect>
                                 <ScrollViewer SnapsToDevicePixels="True">
                                     <StackPanel IsItemsHost="True"/>
@@ -181,11 +178,11 @@
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsHighlighted" Value="True">
-                            <Setter TargetName="Bd" Property="Background" Value="{StaticResource ThemeAccentSoft}"/>
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource ThemeAccentSoft}"/>
                         </Trigger>
                         <Trigger Property="IsSelected" Value="True">
-                            <Setter TargetName="Bd" Property="Background" Value="{StaticResource ThemeAccentSoft}"/>
-                            <Setter Property="Foreground" Value="{StaticResource ThemeAccentDeep}"/>
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource ThemeAccentSoft}"/>
+                            <Setter Property="Foreground" Value="{DynamicResource ThemeAccentDeep}"/>
                             <Setter Property="FontWeight" Value="SemiBold"/>
                         </Trigger>
                     </ControlTemplate.Triggers>
@@ -197,16 +194,16 @@
     <!-- ContextMenu -->
 
     <Style TargetType="ContextMenu">
-        <Setter Property="Background" Value="White"/>
+        <Setter Property="Background" Value="{DynamicResource SurfaceCard}"/>
         <Setter Property="Padding" Value="4"/>
         <Setter Property="SnapsToDevicePixels" Value="True"/>
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="ContextMenu">
-                    <Border Background="{TemplateBinding Background}" BorderBrush="#FFE2DDF0" BorderThickness="1"
+                    <Border Background="{TemplateBinding Background}" BorderBrush="{DynamicResource AccentSoft}" BorderThickness="1"
                             CornerRadius="8" Padding="{TemplateBinding Padding}" SnapsToDevicePixels="True">
                         <Border.Effect>
-                            <DropShadowEffect Color="#FF000000" Opacity="0.15" BlurRadius="16" ShadowDepth="3"/>
+                            <DropShadowEffect Color="{DynamicResource TextPrimaryColor}" Opacity="0.15" BlurRadius="16" ShadowDepth="3"/>
                         </Border.Effect>
                         <StackPanel IsItemsHost="True"/>
                     </Border>
@@ -226,10 +223,10 @@
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsHighlighted" Value="True">
-                            <Setter TargetName="Bd" Property="Background" Value="{StaticResource ThemeAccentSoft}"/>
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource ThemeAccentSoft}"/>
                         </Trigger>
                         <Trigger Property="IsEnabled" Value="False">
-                            <Setter Property="Foreground" Value="#FFB0B0B0"/>
+                            <Setter Property="Foreground" Value="{DynamicResource TextDisabled}"/>
                         </Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>
@@ -238,7 +235,7 @@
     </Style>
 
     <Style TargetType="Separator">
-        <Setter Property="Background" Value="#FFEDEDF2"/>
+        <Setter Property="Background" Value="{DynamicResource BorderSubtle}"/>
         <Setter Property="Height" Value="1"/>
         <Setter Property="Margin" Value="4,4"/>
     </Style>
@@ -252,8 +249,8 @@
                 <ControlTemplate TargetType="CheckBox">
                     <StackPanel Orientation="Horizontal" Background="Transparent">
                         <Border x:Name="Box" Width="16" Height="16" CornerRadius="4"
-                                BorderBrush="#FFC9C5D6" BorderThickness="1.4" Background="White">
-                            <Path x:Name="Check" Data="M2,7.2 L6,11 L13,3" Stroke="White" StrokeThickness="2"
+                                BorderBrush="{DynamicResource BorderStrong}" BorderThickness="1.4" Background="{DynamicResource SurfaceCard}">
+                            <Path x:Name="Check" Data="M2,7.2 L6,11 L13,3" Stroke="{DynamicResource TextOnAccent}" StrokeThickness="2"
                                   StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
                                   Visibility="Collapsed"/>
                         </Border>
@@ -261,12 +258,12 @@
                     </StackPanel>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsChecked" Value="True">
-                            <Setter TargetName="Box" Property="Background" Value="{StaticResource ThemeAccent}"/>
-                            <Setter TargetName="Box" Property="BorderBrush" Value="{StaticResource ThemeAccent}"/>
+                            <Setter TargetName="Box" Property="Background" Value="{DynamicResource ThemeAccent}"/>
+                            <Setter TargetName="Box" Property="BorderBrush" Value="{DynamicResource ThemeAccent}"/>
                             <Setter TargetName="Check" Property="Visibility" Value="Visible"/>
                         </Trigger>
                         <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="Box" Property="BorderBrush" Value="{StaticResource ThemeAccent}"/>
+                            <Setter TargetName="Box" Property="BorderBrush" Value="{DynamicResource ThemeAccent}"/>
                         </Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>
@@ -286,8 +283,8 @@
     <Style x:Key="ThemeDialogField" TargetType="TextBox">
         <Setter Property="Padding" Value="8,6"/>
         <Setter Property="FontSize" Value="12.5"/>
-        <Setter Property="Background" Value="White"/>
-        <Setter Property="BorderBrush" Value="{StaticResource ThemeBorder}"/>
+        <Setter Property="Background" Value="{DynamicResource SurfaceCard}"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource ThemeBorder}"/>
         <Setter Property="BorderThickness" Value="1"/>
         <Setter Property="Margin" Value="0,0,0,8"/>
         <Setter Property="Template">
@@ -296,11 +293,26 @@
                     <Border x:Name="Bd" Background="{TemplateBinding Background}"
                             BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"
                             CornerRadius="7" SnapsToDevicePixels="True">
-                        <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}"/>
+                        <Grid>
+                            <!-- Every caller of this style sets Tag to the field's placeholder text
+                                 (e.g. Tag="Email") expecting it to show as watermark text — it never
+                                 actually rendered anywhere, so every one of those fields showed up
+                                 blank with no hint what to type, across Contacts, folder rename, and
+                                 more. Shown only while empty and unfocused, the same as a native HTML
+                                 placeholder — IsHitTestVisible="False" so it never intercepts the
+                                 click meant for the real TextBox underneath it. -->
+                            <TextBlock Text="{TemplateBinding Tag}" Margin="{TemplateBinding Padding}"
+                                       Foreground="{DynamicResource TextMuted}" IsHitTestVisible="False"
+                                       VerticalAlignment="Center" x:Name="Placeholder" Visibility="Collapsed"/>
+                            <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}"/>
+                        </Grid>
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsFocused" Value="True">
-                            <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource ThemeAccent}"/>
+                            <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource ThemeAccent}"/>
+                        </Trigger>
+                        <Trigger Property="Text" Value="">
+                            <Setter TargetName="Placeholder" Property="Visibility" Value="Visible"/>
                         </Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>
@@ -310,8 +322,8 @@
     <Style x:Key="ThemeDialogPasswordField" TargetType="PasswordBox">
         <Setter Property="Padding" Value="8,6"/>
         <Setter Property="FontSize" Value="12.5"/>
-        <Setter Property="Background" Value="White"/>
-        <Setter Property="BorderBrush" Value="{StaticResource ThemeBorder}"/>
+        <Setter Property="Background" Value="{DynamicResource SurfaceCard}"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource ThemeBorder}"/>
         <Setter Property="BorderThickness" Value="1"/>
         <Setter Property="Margin" Value="0,0,0,8"/>
         <Setter Property="Template">
@@ -324,7 +336,7 @@
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsFocused" Value="True">
-                            <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource ThemeAccent}"/>
+                            <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource ThemeAccent}"/>
                         </Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>
@@ -336,8 +348,8 @@
          like classic Windows chrome next to the rest of this theme's flat, rounded, purple-accented
          look. A dark rounded pill matches the app's own popovers/menus instead. -->
     <Style TargetType="ToolTip">
-        <Setter Property="Background" Value="#FF544C63"/>
-        <Setter Property="Foreground" Value="White"/>
+        <Setter Property="Background" Value="{DynamicResource TextSecondary}"/>
+        <Setter Property="Foreground" Value="{DynamicResource TextOnAccent}"/>
         <Setter Property="FontSize" Value="11.5"/>
         <Setter Property="Padding" Value="9,5"/>
         <Setter Property="HasDropShadow" Value="False"/>
@@ -347,7 +359,7 @@
                     <Border Background="{TemplateBinding Background}" CornerRadius="6"
                             Padding="{TemplateBinding Padding}" SnapsToDevicePixels="True">
                         <Border.Effect>
-                            <DropShadowEffect Color="#FF000000" Opacity="0.12" BlurRadius="10" ShadowDepth="1"/>
+                            <DropShadowEffect Color="{DynamicResource TextPrimaryColor}" Opacity="0.12" BlurRadius="10" ShadowDepth="1"/>
                         </Border.Effect>
                         <ContentPresenter/>
                     </Border>

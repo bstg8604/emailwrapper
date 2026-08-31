@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using System.Windows.Input;
@@ -20,6 +20,11 @@ public partial class QuickLookWindow : Window
     private const double MinZoom = 1.0;
     private const double MaxZoom = 5.0;
     private double _fitWidth, _fitHeight;
+
+    // Must match the outer Border's Margin in XAML, which reserves room for the drop shadow's blur
+    // (an Effect contributes nothing to layout, so SizeToContent would otherwise clip it away).
+    private const double ShadowMarginWidth = 24 + 24;
+    private const double ShadowMarginHeight = 20 + 28;
     private double _zoomFactor = 1.0;
 
     /// <summary>Raster formats WPF's <see cref="BitmapImage"/> can decode on its own.</summary>
@@ -68,9 +73,11 @@ public partial class QuickLookWindow : Window
             var naturalWidth = bitmap.PixelWidth * 96.0 / bitmap.DpiX;
             var naturalHeight = bitmap.PixelHeight * 96.0 / bitmap.DpiY;
 
+            // Every screen-fraction budget below is against the window, and the window is the
+            // panel plus the transparent gutter the shadow needs — so the gutter comes off first.
             var work = SystemParameters.WorkArea;
-            var maxWidth = Math.Max(320, work.Width * 0.7);
-            var maxHeight = Math.Max(240, work.Height * 0.65);
+            var maxWidth = Math.Max(320, work.Width * 0.7 - ShadowMarginWidth);
+            var maxHeight = Math.Max(240, work.Height * 0.65 - ShadowMarginHeight);
             var scale = Math.Min(1.0, Math.Min(maxWidth / naturalWidth, maxHeight / naturalHeight));
 
             _fitWidth = naturalWidth * scale;
@@ -81,8 +88,8 @@ public partial class QuickLookWindow : Window
             // How far zooming in is allowed to grow the window itself before the ScrollViewer takes
             // over for panning instead — a more generous fraction than the initial fit-to-screen
             // size above, since this is the "how big can the window get" ceiling, not the opening size.
-            ImageArea.MaxWidth = work.Width * 0.94;
-            ImageArea.MaxHeight = work.Height * 0.9;
+            ImageArea.MaxWidth = work.Width * 0.94 - ShadowMarginWidth;
+            ImageArea.MaxHeight = work.Height * 0.9 - ShadowMarginHeight;
         }
         catch (Exception)
         {

@@ -5,7 +5,7 @@
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         Title="Attachment" Height="720" Width="900" MinWidth="480" MinHeight="360"
         WindowStyle="None" ResizeMode="CanResize"
-        Background="White" FontFamily="Segoe UI"
+        Background="{DynamicResource SurfaceCard}" FontFamily="Segoe UI"
         WindowStartupLocation="CenterOwner">
 
     <shell:WindowChrome.WindowChrome>
@@ -17,8 +17,8 @@
         <Style x:Key="BarButton" TargetType="Button">
             <Setter Property="Padding" Value="12,7"/>
             <Setter Property="Margin" Value="6,0,0,0"/>
-            <Setter Property="Background" Value="#FFF3F3F5"/>
-            <Setter Property="Foreground" Value="#FF444444"/>
+            <Setter Property="Background" Value="{DynamicResource SurfaceSunken}"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextBody}"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="FontSize" Value="12.5"/>
@@ -32,7 +32,7 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#FFE9E4F6"/>
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource AccentSoft}"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -44,7 +44,7 @@
             <Setter Property="Width" Value="44"/>
             <Setter Property="Height" Value="44"/>
             <Setter Property="Background" Value="Transparent"/>
-            <Setter Property="Foreground" Value="#FF3C3C3C"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextBody}"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="FontFamily" Value="Segoe Fluent Icons, Segoe MDL2 Assets"/>
@@ -58,8 +58,8 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#FFE81123"/>
-                                <Setter Property="Foreground" Value="White"/>
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Danger}"/>
+                                <Setter Property="Foreground" Value="{DynamicResource TextOnAccent}"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -68,15 +68,15 @@
         </Style>
     </Window.Resources>
 
-    <Border BorderBrush="#FFB6B6C0" BorderThickness="1" CornerRadius="8">
-        <Grid Background="#FFF6F5F9">
+    <Border BorderBrush="{DynamicResource TextDisabled}" BorderThickness="1" CornerRadius="8">
+        <Grid Background="{DynamicResource SurfaceApp}">
             <Grid.RowDefinitions>
                 <RowDefinition Height="44"/>
                 <RowDefinition Height="*"/>
             </Grid.RowDefinitions>
 
             <!-- Title bar doubles as the toolbar -->
-            <Grid Grid.Row="0" Background="White">
+            <Grid Grid.Row="0" Background="{DynamicResource SurfaceCard}">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="*"/>
@@ -86,12 +86,12 @@
 
                 <TextBlock Grid.Column="0" x:Name="FileGlyph" Text="&#xE723;" Margin="16,0,0,0"
                            FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="14"
-                           Foreground="{StaticResource ThemeAccent}" VerticalAlignment="Center"/>
+                           Foreground="{DynamicResource ThemeAccent}" VerticalAlignment="Center"/>
 
                 <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="10,0,0,0" VerticalAlignment="Center">
-                    <TextBlock x:Name="FileNameText" FontSize="13" FontWeight="SemiBold" Foreground="#FF333333"
+                    <TextBlock x:Name="FileNameText" FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource TextPrimary}"
                                TextTrimming="CharacterEllipsis"/>
-                    <TextBlock x:Name="FileSizeText" FontSize="11.5" Foreground="#FF9A9A9A" Margin="10,1,0,0"/>
+                    <TextBlock x:Name="FileSizeText" FontSize="11.5" Foreground="{DynamicResource TextMuted}" Margin="10,1,0,0"/>
                 </StackPanel>
 
                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,8,0">
@@ -105,24 +105,24 @@
                 <Button Grid.Column="3" Content="&#xE8BB;" Style="{StaticResource CloseGlyphButton}"
                         AutomationProperties.Name="Close" Click="CloseButton_Click"/>
             </Grid>
-            <Border Grid.Row="0" VerticalAlignment="Bottom" Height="1" Background="#FFF0F0F0"/>
+            <Border Grid.Row="0" VerticalAlignment="Bottom" Height="1" Background="{DynamicResource SurfaceSunken}"/>
 
-            <Grid Grid.Row="1" Background="#FFFBFAFC">
+            <Grid Grid.Row="1" Background="{DynamicResource SurfaceAlt}">
                 <wv2:WebView2 x:Name="Viewer" Visibility="Collapsed"/>
 
                 <!-- Shown for file types that can't be rendered safely inline -->
                 <StackPanel x:Name="FallbackPanel" HorizontalAlignment="Center" VerticalAlignment="Center"
                             Visibility="Collapsed" MaxWidth="380">
                     <TextBlock Text="&#xE7C3;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="40"
-                               Foreground="#FFD5D0E0" HorizontalAlignment="Center"/>
-                    <TextBlock x:Name="FallbackTitle" FontSize="14.5" FontWeight="SemiBold" Foreground="#FF555555"
+                               Foreground="{DynamicResource BorderStrong}" HorizontalAlignment="Center"/>
+                    <TextBlock x:Name="FallbackTitle" FontSize="14.5" FontWeight="SemiBold" Foreground="{DynamicResource TextSecondary}"
                                HorizontalAlignment="Center" Margin="0,14,0,0" TextWrapping="Wrap"
                                TextAlignment="Center"/>
-                    <TextBlock x:Name="FallbackDetail" FontSize="12.5" Foreground="#FF9A9A9A" Margin="0,8,0,0"
+                    <TextBlock x:Name="FallbackDetail" FontSize="12.5" Foreground="{DynamicResource TextMuted}" Margin="0,8,0,0"
                                TextWrapping="Wrap" TextAlignment="Center"/>
                 </StackPanel>
 
-                <TextBlock x:Name="LoadingText" Text="Opening…" Foreground="#FFB5B5B5" FontSize="13"
+                <TextBlock x:Name="LoadingText" Text="Opening…" Foreground="{DynamicResource TextDisabled}" FontSize="13"
                            HorizontalAlignment="Center" VerticalAlignment="Center"/>
             </Grid>
         </Grid>

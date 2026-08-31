@@ -3,9 +3,10 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
+        xmlns:ui="clr-namespace:EmailClient.UI"
         Title="New message" Height="680" Width="950" MinWidth="680" MinHeight="440"
         WindowStyle="None" ResizeMode="CanResizeWithGrip"
-        Background="White" FontFamily="Segoe UI"
+        Background="{DynamicResource SurfaceCard}" FontFamily="Segoe UI"
         WindowStartupLocation="CenterOwner"
         AllowDrop="True" DragOver="ComposeWindow_DragOver" Drop="ComposeWindow_Drop">
 
@@ -26,6 +27,11 @@
             <Setter Property="FontSize" Value="13.5"/>
             <Setter Property="Background" Value="Transparent"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
+            <!-- WPF only shows the text I-beam automatically over the TextBox's actual text-content
+                 area, not its Padding — and To/Cc/Bcc/Subject all carry a generous 10px padding
+                 (see the inline Padding on each), which visually reads as part of the field but
+                 sat outside that hit region, so most of the field showed a plain arrow instead. -->
+            <Setter Property="Cursor" Value="IBeam"/>
             <!-- Padding alone doesn't reliably centre a TextBox's own text — its default
                  VerticalContentAlignment is Top, so a focused box (with its caret needing full
                  font-ascent/descent room) and an unfocused one can end up sized just differently
@@ -40,7 +46,7 @@
              wherever its own label ends; To and Subject don't need to share one input-start column
              to read cleanly — they don't in Apple Mail or most other clients either. -->
         <Style x:Key="FieldLabel" TargetType="TextBlock">
-            <Setter Property="Foreground" Value="#FF9A9A9A"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextMuted}"/>
             <Setter Property="FontSize" Value="13"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
         </Style>
@@ -51,7 +57,7 @@
             <Setter Property="Height" Value="28"/>
             <Setter Property="Margin" Value="0,0,2,0"/>
             <Setter Property="Background" Value="Transparent"/>
-            <Setter Property="Foreground" Value="#FF444444"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextBody}"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="FontSize" Value="13.5"/>
@@ -65,10 +71,10 @@
                             <!-- Hover fades an overlay in/out rather than swapping Bd's own Background
                                  outright — Bd stays free for a programmatic Background change (the
                                  plain/rich toggle's active state, say) to keep showing through. -->
-                            <Border x:Name="HoverOverlay" Background="#FFEDE8F8" CornerRadius="5"
+                            <Border x:Name="HoverOverlay" Background="{DynamicResource AccentSoft}" CornerRadius="5"
                                     Opacity="0" IsHitTestVisible="False"/>
                             <!-- Press feedback stays instant — a click should feel immediate, not eased. -->
-                            <Border x:Name="PressOverlay" Background="#FFDDD3F3" CornerRadius="5"
+                            <Border x:Name="PressOverlay" Background="{DynamicResource AccentSoft}" CornerRadius="5"
                                     Opacity="0" IsHitTestVisible="False"/>
                             <!-- Drawn last (on top of both overlays) — otherwise a fully-opaque hover
                                  overlay paints straight over the button's own text/icon, hiding it. -->
@@ -112,8 +118,8 @@
             <Setter Property="Padding" Value="10,0"/>
             <Setter Property="Margin" Value="0,0,5,0"/>
             <Setter Property="FontSize" Value="12"/>
-            <Setter Property="Background" Value="White"/>
-            <Setter Property="BorderBrush" Value="#FFE4E0EE"/>
+            <Setter Property="Background" Value="{DynamicResource SurfaceCard}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource Border}"/>
             <Setter Property="BorderThickness" Value="1"/>
         </Style>
 
@@ -130,7 +136,7 @@
         <Style x:Key="ToolbarSeparator" TargetType="Border">
             <Setter Property="Width" Value="1"/>
             <Setter Property="Height" Value="18"/>
-            <Setter Property="Background" Value="#FFE4E4E8"/>
+            <Setter Property="Background" Value="{DynamicResource Border}"/>
             <Setter Property="Margin" Value="5,0,7,0"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
         </Style>
@@ -138,8 +144,8 @@
         <Style x:Key="PillButton" TargetType="Button">
             <Setter Property="Padding" Value="16,8"/>
             <Setter Property="Margin" Value="0,0,8,0"/>
-            <Setter Property="Background" Value="#FFF3F3F5"/>
-            <Setter Property="Foreground" Value="#FF555555"/>
+            <Setter Property="Background" Value="{DynamicResource SurfaceSunken}"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextSecondary}"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="FontSize" Value="12.5"/>
@@ -166,7 +172,7 @@
             <Setter Property="Width" Value="38"/>
             <Setter Property="Height" Value="38"/>
             <Setter Property="Background" Value="Transparent"/>
-            <Setter Property="Foreground" Value="#FF3C3C3C"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextBody}"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="FontFamily" Value="Segoe Fluent Icons, Segoe MDL2 Assets"/>
             <Setter Property="FontSize" Value="12"/>
@@ -179,7 +185,7 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#FFEDEDED"/>
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource SurfaceHover}"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -199,8 +205,8 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#FFE81123"/>
-                                <Setter TargetName="Bd" Property="TextElement.Foreground" Value="White"/>
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Danger}"/>
+                                <Setter TargetName="Bd" Property="TextElement.Foreground" Value="{DynamicResource TextOnAccent}"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -212,8 +218,8 @@
     <!-- A visibly darker edge than a plain white-on-white 1px line — this window floats over the
          main window and (with WindowChrome + WindowStyle="None") gets no OS drop shadow to lean
          on for separation, so the border itself has to do that job. -->
-    <Border BorderBrush="#FFB6B6C0" BorderThickness="1" CornerRadius="8">
-        <Grid Background="#FFF6F5F9">
+    <Border BorderBrush="{DynamicResource TextDisabled}" BorderThickness="1" CornerRadius="8">
+        <Grid Background="{DynamicResource SurfaceApp}">
             <Grid.RowDefinitions>
                 <RowDefinition Height="38"/>
                 <RowDefinition Height="Auto"/>
@@ -224,7 +230,7 @@
             </Grid.RowDefinitions>
 
             <!-- Custom title bar -->
-            <Grid Grid.Row="0" Background="White">
+            <Grid Grid.Row="0" Background="{DynamicResource SurfaceCard}">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="Auto"/>
@@ -232,7 +238,7 @@
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
                 <TextBlock x:Name="HeaderText" Text="New message" Margin="16,0,0,0" VerticalAlignment="Center"
-                           Foreground="#FF555555" FontSize="12.5" FontWeight="SemiBold"/>
+                           Foreground="{DynamicResource TextSecondary}" FontSize="12.5" FontWeight="SemiBold"/>
                 <!-- Multiple compose windows can be open at once — minimize gets one out of the
                      way without discarding it, and maximize gives a full-window editing view. -->
                 <Button Grid.Column="1" Content="&#xE921;" Style="{StaticResource WindowGlyphButton}"
@@ -242,15 +248,15 @@
                 <Button Grid.Column="3" Content="&#xE8BB;" Style="{StaticResource CloseGlyphButton}"
                         AutomationProperties.Name="Close" Click="CancelButton_Click"/>
             </Grid>
-            <Border Grid.Row="0" VerticalAlignment="Bottom" Height="1" Background="#FFF0F0F0"/>
+            <Border Grid.Row="0" VerticalAlignment="Bottom" Height="1" Background="{DynamicResource SurfaceSunken}"/>
 
             <!-- Recipient / subject fields — a distinct white card like the toolbar/body below it,
                  instead of sitting directly on the page background with nothing framing it. -->
             <!-- Padding comfortably exceeds the corner radius (8) — text sitting right at a rounded
                  corner's curve looks clipped/cramped; the field text needs enough inset that it
                  only ever meets a straight edge. -->
-            <Border Grid.Row="1" Margin="20,10,20,0" Background="White" CornerRadius="8"
-                    BorderBrush="#FFE7E6EE" BorderThickness="1" Padding="14,4">
+            <Border Grid.Row="1" Margin="20,10,20,0" Background="{DynamicResource SurfaceCard}" CornerRadius="8"
+                    BorderBrush="{DynamicResource Border}" BorderThickness="1" Padding="14,4">
             <StackPanel>
                 <Grid MinHeight="40">
                     <Grid.ColumnDefinitions>
@@ -262,23 +268,22 @@
                     <!-- Wraps instead of scrolling off past the visible width — with a full To/Cc/Bcc
                          list, a one-line field just hides most of the recipients from view; MinHeight
                          above (not a fixed Height) is what lets this row actually grow to fit them. -->
-                    <TextBox x:Name="ToBox" Grid.Column="1" Style="{StaticResource FieldBox}"
-                             TextWrapping="Wrap" AcceptsReturn="False" VerticalContentAlignment="Top" Padding="10,10,0,10"
-                             AutomationProperties.Name="To"/>
+                    <ui:RecipientBox x:Name="ToBox" Grid.Column="1" Margin="10,4,0,4"
+                                     AutomationProperties.Name="To"/>
                     <!-- Independent Cc/Bcc toggles (Gmail's convention) rather than one link that
                          reveals both — clicking "Cc" only brings Cc down; Bcc stays put until its
                          own link is clicked. Each link disappears once its field is revealed, since
                          there's no reason to hide it again mid-compose. -->
                     <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Top" Margin="0,13,0,0">
-                        <TextBlock x:Name="CcToggle" Text="Cc" Foreground="#FF9A9A9A" FontSize="12"
+                        <TextBlock x:Name="CcToggle" Text="Cc" Foreground="{DynamicResource TextMuted}" FontSize="12"
                                    VerticalAlignment="Center" Cursor="Hand" MouseLeftButtonUp="CcToggle_Click"/>
-                        <TextBlock x:Name="ToggleSeparator" Text="/" Foreground="#FFD5D5D5" FontSize="12" Margin="4,0"
+                        <TextBlock x:Name="ToggleSeparator" Text="/" Foreground="{DynamicResource BorderStrong}" FontSize="12" Margin="4,0"
                                    VerticalAlignment="Center"/>
-                        <TextBlock x:Name="BccToggle" Text="Bcc" Foreground="#FF9A9A9A" FontSize="12"
+                        <TextBlock x:Name="BccToggle" Text="Bcc" Foreground="{DynamicResource TextMuted}" FontSize="12"
                                    VerticalAlignment="Center" Cursor="Hand" MouseLeftButtonUp="BccToggle_Click"/>
                     </StackPanel>
                 </Grid>
-                <Border Height="1" Background="#FFF0F0F0"/>
+                <Border Height="1" Background="{DynamicResource SurfaceSunken}"/>
 
                 <Grid x:Name="CcRow" MinHeight="40" Visibility="Collapsed">
                     <Grid.ColumnDefinitions>
@@ -287,17 +292,16 @@
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
                     <TextBlock Text="Cc" Style="{StaticResource FieldLabel}" VerticalAlignment="Top" Margin="0,11,0,0"/>
-                    <TextBox x:Name="CcBox" Grid.Column="1" Style="{StaticResource FieldBox}"
-                             TextWrapping="Wrap" AcceptsReturn="False" VerticalContentAlignment="Top" Padding="10,10,0,10"
-                             AutomationProperties.Name="Cc"/>
+                    <ui:RecipientBox x:Name="CcBox" Grid.Column="1" Margin="10,4,0,4"
+                                     AutomationProperties.Name="Cc"/>
                     <!-- Revealing Cc/Bcc needs a way back — without this, the only undo is manually
                          clearing the text and living with an empty row taking up space forever. -->
                     <TextBlock Grid.Column="2" Text="&#xE711;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
-                               FontSize="10" Foreground="#FFB5B5B5" VerticalAlignment="Top" Margin="0,13,0,0" Cursor="Hand"
+                               FontSize="10" Foreground="{DynamicResource TextDisabled}" VerticalAlignment="Top" Margin="0,13,0,0" Cursor="Hand"
                                ToolTip="Remove Cc" MouseLeftButtonUp="HideCc_Click"
                                AutomationProperties.Name="Remove Cc"/>
                 </Grid>
-                <Border x:Name="CcRowDivider" Height="1" Background="#FFF0F0F0" Visibility="Collapsed"/>
+                <Border x:Name="CcRowDivider" Height="1" Background="{DynamicResource SurfaceSunken}" Visibility="Collapsed"/>
 
                 <Grid x:Name="BccRow" MinHeight="40" Visibility="Collapsed">
                     <Grid.ColumnDefinitions>
@@ -306,15 +310,14 @@
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
                     <TextBlock Text="Bcc" Style="{StaticResource FieldLabel}" VerticalAlignment="Top" Margin="0,11,0,0"/>
-                    <TextBox x:Name="BccBox" Grid.Column="1" Style="{StaticResource FieldBox}"
-                             TextWrapping="Wrap" AcceptsReturn="False" VerticalContentAlignment="Top" Padding="10,10,0,10"
-                             AutomationProperties.Name="Bcc"/>
+                    <ui:RecipientBox x:Name="BccBox" Grid.Column="1" Margin="10,4,0,4"
+                                     AutomationProperties.Name="Bcc"/>
                     <TextBlock Grid.Column="2" Text="&#xE711;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
-                               FontSize="10" Foreground="#FFB5B5B5" VerticalAlignment="Top" Margin="0,13,0,0" Cursor="Hand"
+                               FontSize="10" Foreground="{DynamicResource TextDisabled}" VerticalAlignment="Top" Margin="0,13,0,0" Cursor="Hand"
                                ToolTip="Remove Bcc" MouseLeftButtonUp="HideBcc_Click"
                                AutomationProperties.Name="Remove Bcc"/>
                 </Grid>
-                <Border x:Name="BccRowDivider" Height="1" Background="#FFF0F0F0" Visibility="Collapsed"/>
+                <Border x:Name="BccRowDivider" Height="1" Background="{DynamicResource SurfaceSunken}" Visibility="Collapsed"/>
 
                 <Grid Height="40">
                     <Grid.ColumnDefinitions>
@@ -339,7 +342,7 @@
                  the toggle itself has no Tag, so it keeps flowing normally and stays reachable in
                  both modes — or switching to plain text would be a one-way trip. -->
             <Border Grid.Row="2" x:Name="FormatToolbar" Margin="20,8,20,0" Padding="4,4"
-                    Background="#FFFAF9FD" CornerRadius="8">
+                    Background="{DynamicResource AccentSofter}" CornerRadius="8">
               <StackPanel>
                 <WrapPanel x:Name="FormatWrap" Orientation="Horizontal">
                     <Button Tag="RichOnly" Style="{StaticResource FormatButton}" Click="Bold_Click" ToolTip="Bold (Ctrl+B)"
@@ -421,7 +424,7 @@
                         <StackPanel>
                             <TextBlock Text="A" FontFamily="Segoe UI" FontWeight="Bold" FontSize="13"
                                        HorizontalAlignment="Center"/>
-                            <Border x:Name="ColourSwatch" Height="3" Width="16" Background="#FF1F1F1F"
+                            <Border x:Name="ColourSwatch" Height="3" Width="16" Background="{DynamicResource TextPrimary}"
                                     CornerRadius="1" Margin="0,2,0,0"/>
                         </StackPanel>
                     </Button>
@@ -430,7 +433,7 @@
                         <StackPanel>
                             <TextBlock Text="&#xE7E6;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="13"
                                        HorizontalAlignment="Center"/>
-                            <Border x:Name="HighlightSwatch" Height="3" Width="16" Background="#FFFFF176"
+                            <Border x:Name="HighlightSwatch" Height="3" Width="16" Background="{DynamicResource Highlight}"
                                     CornerRadius="1" Margin="0,2,0,0"/>
                         </StackPanel>
                     </Button>
@@ -537,7 +540,7 @@
 
             <!-- Body: rich editor, or a plain TextBox when plain-text mode is on -->
             <Grid Grid.Row="3" Margin="20,8,20,0">
-                <Border BorderBrush="#FFEDEDF2" BorderThickness="1" CornerRadius="8" ClipToBounds="True">
+                <Border BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" CornerRadius="8" ClipToBounds="True">
                     <Grid>
                         <!-- The editor must not swallow file drops; the window handles them as
                              attachments rather than letting WebView2 navigate to the file. -->
@@ -551,12 +554,12 @@
 
                 <!-- Slides in when inserting a link, instead of a modal prompt -->
                 <Border x:Name="LinkBar" Visibility="Collapsed" VerticalAlignment="Top" Margin="12"
-                        Background="White" CornerRadius="8" Padding="10,8" BorderBrush="#FFE2DDF0" BorderThickness="1">
+                        Background="{DynamicResource SurfaceCard}" CornerRadius="8" Padding="10,8" BorderBrush="{DynamicResource AccentSoft}" BorderThickness="1">
                     <Border.Effect>
-                        <DropShadowEffect Color="#FF000000" Opacity="0.12" BlurRadius="14" ShadowDepth="2"/>
+                        <DropShadowEffect Color="{DynamicResource TextPrimaryColor}" Opacity="0.12" BlurRadius="14" ShadowDepth="2"/>
                     </Border.Effect>
                     <StackPanel Orientation="Horizontal">
-                        <TextBlock Text="Link to" VerticalAlignment="Center" FontSize="12.5" Foreground="#FF777777"
+                        <TextBlock Text="Link to" VerticalAlignment="Center" FontSize="12.5" Foreground="{DynamicResource TextSecondary}"
                                    Margin="0,0,10,0"/>
                         <TextBox x:Name="LinkBox" Width="300" FontSize="12.5" Padding="6,4" VerticalAlignment="Center"
                                  AutomationProperties.Name="Link address"/>
@@ -574,16 +577,16 @@
                 </ItemsControl.ItemsPanel>
                 <ItemsControl.ItemTemplate>
                     <DataTemplate>
-                        <Border Background="#FFF4F4F6" CornerRadius="7" Padding="10,6" Margin="0,0,8,8">
+                        <Border Background="{DynamicResource SurfaceSunken}" CornerRadius="7" Padding="10,6" Margin="0,0,8,8">
                             <StackPanel Orientation="Horizontal">
                                 <TextBlock Text="&#xE723;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
-                                           FontSize="12" Foreground="#FF777777" VerticalAlignment="Center" Margin="0,0,7,0"/>
+                                           FontSize="12" Foreground="{DynamicResource TextSecondary}" VerticalAlignment="Center" Margin="0,0,7,0"/>
                                 <TextBlock Text="{Binding Name}" FontSize="12" VerticalAlignment="Center"/>
-                                <TextBlock Text="{Binding Size}" FontSize="11" Foreground="#FFAAAAAA"
+                                <TextBlock Text="{Binding Size}" FontSize="11" Foreground="{DynamicResource TextMuted}"
                                            VerticalAlignment="Center" Margin="7,0,0,0"/>
                                 <Button Content="&#xE711;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
                                         FontSize="10" Margin="8,0,0,0" Width="18" Height="18" Cursor="Hand"
-                                        Background="Transparent" BorderThickness="0" Foreground="#FF999999"
+                                        Background="Transparent" BorderThickness="0" Foreground="{DynamicResource TextMuted}"
                                         Tag="{Binding Path}" Click="RemoveAttachment_Click"
                                         ToolTip="Remove attachment"
                                         AutomationProperties.Name="Remove attachment">
@@ -594,7 +597,7 @@
                                             </Border>
                                             <ControlTemplate.Triggers>
                                                 <Trigger Property="IsMouseOver" Value="True">
-                                                    <Setter TargetName="Bd" Property="Background" Value="#FFE0DAF0"/>
+                                                    <Setter TargetName="Bd" Property="Background" Value="{DynamicResource AccentSoft}"/>
                                                 </Trigger>
                                             </ControlTemplate.Triggers>
                                         </ControlTemplate>
@@ -627,6 +630,15 @@
                             FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="14" Content="&#xE74D;"/>
                 </StackPanel>
 
+                <!-- Confirms Save Draft actually did something — the button used to close the
+                     whole window with zero feedback, which read as "did that even work?" -->
+                <Border x:Name="SavedFeedback" Grid.Column="1" HorizontalAlignment="Center" VerticalAlignment="Center"
+                        Background="{DynamicResource SuccessSoft}" CornerRadius="6" Padding="12,7"
+                        Opacity="0" IsHitTestVisible="False">
+                    <TextBlock x:Name="SavedFeedbackText" Text="Saved" FontSize="12" FontWeight="SemiBold"
+                               Foreground="{DynamicResource SuccessDeep}"/>
+                </Border>
+
                 <StackPanel Grid.Column="2" Orientation="Horizontal">
                     <Button Style="{StaticResource PillButton}" Click="SaveDraftButton_Click"
                             AutomationProperties.Name="Save draft">
@@ -636,8 +648,8 @@
                             <TextBlock Text="Save draft" VerticalAlignment="Center"/>
                         </StackPanel>
                     </Button>
-                    <Button x:Name="SendButton" Padding="20,8" Background="{StaticResource ThemeAccent}"
-                            Foreground="White" BorderThickness="0" Cursor="Hand" Click="SendButton_Click"
+                    <Button x:Name="SendButton" Padding="20,8" Background="{DynamicResource ThemeAccent}"
+                            Foreground="{DynamicResource SurfaceCard}" BorderThickness="0" Cursor="Hand" Click="SendButton_Click"
                             AutomationProperties.Name="Send">
                         <Button.Template>
                             <ControlTemplate TargetType="Button">

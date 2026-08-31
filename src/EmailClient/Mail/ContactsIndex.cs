@@ -92,7 +92,13 @@ public sealed class ContactsIndex
     }
 
     /// <summary>Top matches for whatever's typed so far, ranked by correspondence frequency.</summary>
-    public IReadOnlyList<string> Suggest(string query, int max = 6)
+    /// <summary>
+    /// Returns <see cref="ContactEntry"/> rather than a pre-formatted string so the caller can
+    /// render a real suggestion row — avatar initial, name and address as separate lines — instead
+    /// of being handed only the flattened "Name &lt;address&gt;" text a plain list has to display
+    /// as-is.
+    /// </summary>
+    public IReadOnlyList<ContactEntry> Suggest(string query, int max = 6)
     {
         if (string.IsNullOrWhiteSpace(query))
             return [];
@@ -104,7 +110,10 @@ public sealed class ContactsIndex
                     || c.DisplayName.Contains(query, StringComparison.OrdinalIgnoreCase))
                 .OrderByDescending(c => c.Score)
                 .Take(max)
-                .Select(c => string.IsNullOrWhiteSpace(c.DisplayName) ? c.Address : $"{c.DisplayName} <{c.Address}>")
+                .Select(c => new ContactEntry(
+                    string.IsNullOrWhiteSpace(c.DisplayName) ? c.Address : c.DisplayName,
+                    c.Address,
+                    string.IsNullOrWhiteSpace(c.DisplayName) ? c.Address : $"{c.DisplayName} <{c.Address}>"))
                 .ToList();
         }
     }
@@ -130,5 +139,27 @@ public sealed class ContactsIndex
     }
 }
 
-/// <summary>One entry in the browsable contact list, as the address-book picker displays it.</summary>
-public readonly record struct ContactEntry(string DisplayName, string Address, string Formatted);
+/// <summary>One entry in the browsable contact list, as the address-book picker and the recipient
+/// autocomplete dropdown both display it.</summary>
+public readonly record struct ContactEntry(string DisplayName, string Address, string Formatted)
+{
+    /// <summary>Avatar-circle letter — same rule as <c>InboxRow.Initial</c>, for the same reason:
+    /// the first letter or digit someone would actually recognise, not just DisplayName[0], which
+    /// breaks on a name that starts with punctuation or an emoji.</summary>
+    public string Initial
+    {
+        get
+        {
+            var trimmed = DisplayName.Trim();
+            if (trimmed.Length == 0)
+                return "?";
+            var firstLetter = trimmed.FirstOrDefault(char.IsLetterOrDigit);
+            return firstLetter == default ? "?" : char.ToUpperInvariant(firstLetter).ToString();
+        }
+    }
+
+    /// <summary>False when there's no real name on file — DisplayName then just repeats Address
+    /// (see <see cref="ContactsIndex.Suggest"/>'s and <see cref="MainWindow.ListAllContacts"/>'s
+    /// fallback) — so a suggestion row shows that once, not the same text on two lines.</summary>
+    public bool HasName => !DisplayName.Equals(Address, StringComparison.OrdinalIgnoreCase);
+}

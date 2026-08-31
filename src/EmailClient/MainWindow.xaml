@@ -1,4 +1,4 @@
-<Window x:Class="EmailClient.MainWindow"
+﻿<Window x:Class="EmailClient.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
@@ -6,7 +6,7 @@
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         Title="Purplemail" Height="760" Width="1180" MinWidth="820" MinHeight="520"
         WindowStyle="None" ResizeMode="CanResize"
-        Background="#FFFAFAFA"
+        Background="{DynamicResource SurfaceAlt}"
         FontFamily="Segoe UI">
 
     <shell:WindowChrome.WindowChrome>
@@ -23,17 +23,17 @@
         <!-- The sidebar's "you're here" cue needs to read as stronger than its own hover state,
              not weaker — this is what FolderRow's hover trigger and the active-folder rows below
              (FolderInbox, HighlightFolder, the live folder list's IsActive trigger) both draw from. -->
-        <SolidColorBrush x:Key="FolderActiveBrush" Color="#FFE7D9F7"/>
+        <SolidColorBrush x:Key="FolderActiveBrush" Color="{DynamicResource AccentSoftColor}"/>
         <LinearGradientBrush x:Key="AvatarBrush" StartPoint="0,0" EndPoint="1,1">
-            <GradientStop Color="#FF8B5CF6" Offset="0"/>
-            <GradientStop Color="#FF6D28D9" Offset="1"/>
+            <GradientStop Color="{DynamicResource AvatarGradientStartColor}" Offset="0"/>
+            <GradientStop Color="{DynamicResource AvatarGradientEndColor}" Offset="1"/>
         </LinearGradientBrush>
 
         <Style x:Key="ToolbarButton" TargetType="Button">
             <Setter Property="Padding" Value="14,8"/>
             <Setter Property="Margin" Value="0,0,8,0"/>
-            <Setter Property="Background" Value="{StaticResource ThemeAccent}"/>
-            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="Background" Value="{DynamicResource ThemeAccent}"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextOnAccent}"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="FontSize" Value="13"/>
@@ -58,7 +58,7 @@
             <Setter Property="Width" Value="34"/>
             <Setter Property="Height" Value="34"/>
             <Setter Property="Background" Value="Transparent"/>
-            <Setter Property="Foreground" Value="#FF3C3C3C"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextBody}"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="FontFamily" Value="Segoe Fluent Icons, Segoe MDL2 Assets"/>
@@ -71,7 +71,7 @@
                             <!-- Hover fades an overlay in/out rather than swapping Bd's own Background
                                  outright — Bd stays free for any programmatic Background change (a
                                  toggled-active state, say) to keep showing through underneath. -->
-                            <Border x:Name="HoverOverlay" Background="#FFF1EDFA" CornerRadius="17"
+                            <Border x:Name="HoverOverlay" Background="{DynamicResource AccentSoft}" CornerRadius="17"
                                     Opacity="0" IsHitTestVisible="False"/>
                             <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
                         </Grid>
@@ -113,7 +113,7 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#FFEDEDED"/>
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource SurfaceHover}"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -133,8 +133,8 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#FFE81123"/>
-                                <Setter TargetName="Bd" Property="TextElement.Foreground" Value="White"/>
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Danger}"/>
+                                <Setter TargetName="Bd" Property="TextElement.Foreground" Value="{DynamicResource TextOnAccent}"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -155,7 +155,7 @@
                      FolderActiveBrush (#FFE7D9F7) — hover is a transient "you're about to click
                      this" cue and shouldn't outshine the "this is the folder you're in" one. -->
                 <Trigger Property="IsMouseOver" Value="True">
-                    <Setter Property="Background" Value="#FFF0EAFA"/>
+                    <Setter Property="Background" Value="{DynamicResource AccentSoft}"/>
                 </Trigger>
             </Style.Triggers>
         </Style>
@@ -169,10 +169,17 @@
         <Style TargetType="{x:Type ListBoxItem}">
             <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
             <Setter Property="Padding" Value="0"/>
+            <!-- Every row opens the message on click, same as the star/checkbox controls inside it
+                 already show Hand — the row itself never did, reading as plain inert text instead
+                 of something clickable everywhere except directly over those smaller controls. -->
+            <Setter Property="Cursor" Value="Hand"/>
+            <!-- One sentence per row for a screen reader. Without it the row's separate TextBlocks
+                 are announced as unrelated fragments, with no read/unread state at all. -->
+            <Setter Property="AutomationProperties.Name" Value="{Binding AccessibleName}"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="{x:Type ListBoxItem}">
-                        <Border x:Name="Bd" Background="{TemplateBinding Background}" BorderThickness="0,0,0,1" BorderBrush="#FFF1F1F1">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}" BorderThickness="0,0,0,1" BorderBrush="{DynamicResource SurfaceSunken}">
                             <ContentPresenter/>
                         </Border>
                     </ControlTemplate>
@@ -192,8 +199,8 @@
             <Setter Property="FontSize" Value="12"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="BorderThickness" Value="0"/>
-            <Setter Property="Background" Value="#FFF4F4F6"/>
-            <Setter Property="Foreground" Value="#FF666666"/>
+            <Setter Property="Background" Value="{DynamicResource SurfaceSunken}"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextSecondary}"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="ToggleButton">
@@ -202,8 +209,8 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsChecked" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="{StaticResource ThemeAccentSoft}"/>
-                                <Setter Property="Foreground" Value="{StaticResource ThemeAccentDeep}"/>
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource ThemeAccentSoft}"/>
+                                <Setter Property="Foreground" Value="{DynamicResource ThemeAccentDeep}"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -220,17 +227,17 @@
         </Grid.RowDefinitions>
 
         <!-- Custom title bar (draggable via WindowChrome CaptionHeight) -->
-        <Grid Grid.Row="0" Background="White">
+        <Grid Grid.Row="0" Background="{DynamicResource SurfaceCard}">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
             <StackPanel Orientation="Horizontal" Margin="14,0,0,0" VerticalAlignment="Center">
-                <Border Width="18" Height="18" CornerRadius="5" Background="{StaticResource ThemeAccent}">
+                <Border Width="18" Height="18" CornerRadius="5" Background="{DynamicResource ThemeAccent}">
                     <TextBlock Text="&#xE715;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="9.5"
-                               Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                               Foreground="{DynamicResource SurfaceCard}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                 </Border>
-                <TextBlock Text="Purplemail" Margin="8,0,0,0" Foreground="#FF444444" FontSize="12.5" FontWeight="SemiBold"/>
+                <TextBlock Text="Purplemail" Margin="8,0,0,0" Foreground="{DynamicResource TextBody}" FontSize="12.5" FontWeight="SemiBold"/>
             </StackPanel>
             <StackPanel Grid.Column="1" Orientation="Horizontal">
                 <Button x:Name="MinimizeButton" AutomationProperties.Name="Minimize" Content="&#xE921;" Style="{StaticResource WindowGlyphButton}" Click="MinimizeButton_Click"/>
@@ -240,7 +247,7 @@
         </Grid>
 
         <!-- Toolbar -->
-        <Border Grid.Row="1" Background="White" BorderBrush="#FFE9E9E9" BorderThickness="0,0,0,1" Padding="16,10">
+        <Border Grid.Row="1" Background="{DynamicResource SurfaceCard}" BorderBrush="{DynamicResource SurfaceHover}" BorderThickness="0,0,0,1" Padding="16,10">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto"/>
@@ -267,13 +274,13 @@
                 <Button Grid.Column="2" x:Name="SortButton" Content="&#xE71C;" Style="{StaticResource IconButton}"
                         ToolTip="Sort" AutomationProperties.Name="Sort" Click="SortButton_Click" Margin="0,0,12,0"/>
 
-                <Border Grid.Column="3" Background="#FFF4F4F6" CornerRadius="8" Padding="10,6">
+                <Border Grid.Column="3" Background="{DynamicResource SurfaceSunken}" CornerRadius="8" Padding="10,6">
                     <Grid>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto"/>
                             <ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
-                        <TextBlock Text="&#xE721;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Foreground="#FF999999" FontSize="12" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                        <TextBlock Text="&#xE721;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Foreground="{DynamicResource TextMuted}" FontSize="12" VerticalAlignment="Center" Margin="0,0,8,0"/>
                         <TextBox x:Name="SearchBox" Grid.Column="1" Background="Transparent" BorderThickness="0"
                                  VerticalAlignment="Center" FontSize="13" Tag="Search mail"
                                  TextChanged="SearchBox_TextChanged" KeyDown="SearchBox_KeyDown"/>
@@ -284,10 +291,21 @@
                      gap between the (usually short) status text and the icon cluster on a wide or
                      maximized window; right-aligning keeps it visually attached to those icons
                      instead, and pushes any leftover space back next to the search box instead. -->
-                <TextBlock Grid.Column="4" x:Name="StatusText" VerticalAlignment="Center" Margin="16,0,12,0"
-                           HorizontalAlignment="Right" TextAlignment="Right"
-                           Foreground="#FF9A9A9A" FontSize="12" TextTrimming="CharacterEllipsis"
-                           ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+                <StackPanel Grid.Column="4" Orientation="Horizontal" HorizontalAlignment="Right"
+                            VerticalAlignment="Center" Margin="16,0,12,0">
+                    <!-- Connection indicator. IMAP push can be abandoned mid-session and the
+                         connection can drop; both used to be completely invisible, so mail would
+                         quietly stop being announced with nothing on screen saying why. -->
+                    <Border x:Name="ConnectionDot" Width="8" Height="8" CornerRadius="4"
+                            Background="{DynamicResource TextMuted}" VerticalAlignment="Center" Margin="0,0,7,0"
+                            ToolTip="Not signed in"
+                            AutomationProperties.Name="Connection status"/>
+                    <TextBlock x:Name="StatusText" VerticalAlignment="Center"
+                               TextAlignment="Right"
+                               Foreground="{DynamicResource TextMuted}" FontSize="12" TextTrimming="CharacterEllipsis"
+                               MaxWidth="420"
+                               ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+                </StackPanel>
 
                 <!-- Content is swapped in code between the plain person glyph (signed out) and a
                      small colored avatar with the account's initial (signed in) — same visual
@@ -315,7 +333,7 @@
             </Grid.ColumnDefinitions>
 
             <!-- Folder sidebar -->
-            <Border Grid.Column="0" Background="#FFF8F6FB">
+            <Border Grid.Column="0" Background="{DynamicResource AccentSofter}">
                 <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                 <StackPanel Margin="0,14">
                     <Border x:Name="FolderInbox" Style="{StaticResource FolderRow}" Background="{StaticResource FolderActiveBrush}"
@@ -327,18 +345,18 @@
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
-                            <TextBlock Text="&#xE715;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Foreground="{StaticResource ThemeAccentDeep}" FontSize="14" VerticalAlignment="Center"/>
-                            <TextBlock Grid.Column="1" Text="Inbox" Margin="10,0,0,0" Foreground="{StaticResource ThemeAccentDeep}" FontWeight="SemiBold" FontSize="13" VerticalAlignment="Center"/>
-                            <Border Grid.Column="2" x:Name="InboxUnreadBadge" Background="{StaticResource ThemeAccent}" CornerRadius="8" Padding="6,1" VerticalAlignment="Center">
-                                <TextBlock x:Name="InboxUnreadCount" Foreground="White" FontSize="10.5" FontWeight="SemiBold"/>
+                            <TextBlock Text="&#xE715;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Foreground="{DynamicResource ThemeAccentDeep}" FontSize="14" VerticalAlignment="Center"/>
+                            <TextBlock Grid.Column="1" Text="Inbox" Margin="10,0,0,0" Foreground="{DynamicResource ThemeAccentDeep}" FontWeight="SemiBold" FontSize="13" VerticalAlignment="Center"/>
+                            <Border Grid.Column="2" x:Name="InboxUnreadBadge" Background="{DynamicResource ThemeAccent}" CornerRadius="8" Padding="6,1" VerticalAlignment="Center">
+                                <TextBlock x:Name="InboxUnreadCount" Foreground="{DynamicResource SurfaceCard}" FontSize="10.5" FontWeight="SemiBold"/>
                             </Border>
                         </Grid>
                     </Border>
                     <Border x:Name="FolderSent" Style="{StaticResource FolderRow}" MouseLeftButtonUp="FolderSent_Click" Tag="Sent"
                             AllowDrop="True" Drop="FolderDrop" DragEnter="FolderDragEnter" DragLeave="FolderDragLeave">
                         <StackPanel Orientation="Horizontal">
-                            <TextBlock Text="&#xE724;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Foreground="#FF777777" FontSize="14"/>
-                            <TextBlock Text="Sent" Margin="10,0,0,0" Foreground="#FF555555" FontSize="13"/>
+                            <TextBlock Text="&#xE724;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Foreground="{DynamicResource TextSecondary}" FontSize="14"/>
+                            <TextBlock Text="Sent" Margin="10,0,0,0" Foreground="{DynamicResource TextSecondary}" FontSize="13"/>
                         </StackPanel>
                     </Border>
                     <!-- A distinct document glyph — this used to share the pencil icon with
@@ -352,43 +370,43 @@
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
-                            <TextBlock Text="&#xE7C3;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Foreground="#FF777777" FontSize="14" VerticalAlignment="Center"/>
-                            <TextBlock Grid.Column="1" Text="Drafts" Margin="10,0,0,0" Foreground="#FF555555" FontSize="13" VerticalAlignment="Center"/>
-                            <Border Grid.Column="2" x:Name="DraftsBadge" Background="#FFB9B0C9" CornerRadius="8" Padding="6,1" VerticalAlignment="Center" Visibility="Collapsed">
-                                <TextBlock x:Name="DraftsCount" Foreground="White" FontSize="10.5" FontWeight="SemiBold"/>
+                            <TextBlock Text="&#xE7C3;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Foreground="{DynamicResource TextSecondary}" FontSize="14" VerticalAlignment="Center"/>
+                            <TextBlock Grid.Column="1" Text="Drafts" Margin="10,0,0,0" Foreground="{DynamicResource TextSecondary}" FontSize="13" VerticalAlignment="Center"/>
+                            <Border Grid.Column="2" x:Name="DraftsBadge" Background="{DynamicResource TextDisabled}" CornerRadius="8" Padding="6,1" VerticalAlignment="Center" Visibility="Collapsed">
+                                <TextBlock x:Name="DraftsCount" Foreground="{DynamicResource SurfaceCard}" FontSize="10.5" FontWeight="SemiBold"/>
                             </Border>
                         </Grid>
                     </Border>
                     <Border x:Name="FolderArchive" Style="{StaticResource FolderRow}" MouseLeftButtonUp="FolderArchive_Click" Tag="Archive"
                             AllowDrop="True" Drop="FolderDrop" DragEnter="FolderDragEnter" DragLeave="FolderDragLeave">
                         <StackPanel Orientation="Horizontal">
-                            <TextBlock Text="&#xE7B8;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Foreground="#FF777777" FontSize="14"/>
-                            <TextBlock Text="Archive" Margin="10,0,0,0" Foreground="#FF555555" FontSize="13"/>
+                            <TextBlock Text="&#xE7B8;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Foreground="{DynamicResource TextSecondary}" FontSize="14"/>
+                            <TextBlock Text="Archive" Margin="10,0,0,0" Foreground="{DynamicResource TextSecondary}" FontSize="13"/>
                         </StackPanel>
                     </Border>
                     <Border x:Name="FolderTrash" Style="{StaticResource FolderRow}" MouseLeftButtonUp="FolderTrash_Click" Tag="Trash"
                             AllowDrop="True" Drop="FolderDrop" DragEnter="FolderDragEnter" DragLeave="FolderDragLeave">
                         <StackPanel Orientation="Horizontal">
-                            <TextBlock Text="&#xE74D;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Foreground="#FF777777" FontSize="14"/>
-                            <TextBlock Text="Trash" Margin="10,0,0,0" Foreground="#FF555555" FontSize="13"/>
+                            <TextBlock Text="&#xE74D;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Foreground="{DynamicResource TextSecondary}" FontSize="14"/>
+                            <TextBlock Text="Trash" Margin="10,0,0,0" Foreground="{DynamicResource TextSecondary}" FontSize="13"/>
                         </StackPanel>
                     </Border>
 
-                    <Border Height="1" Background="#FFEAE5F2" Margin="14,12"/>
+                    <Border Height="1" Background="{DynamicResource AccentSoft}" Margin="14,12"/>
 
                     <Border x:Name="FolderStarred" Style="{StaticResource FolderRow}" MouseLeftButtonUp="FolderStarred_Click" Tag="Starred">
                         <StackPanel Orientation="Horizontal">
-                            <TextBlock Text="&#xE734;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Foreground="#FFD4A017" FontSize="14"/>
-                            <TextBlock Text="Starred" Margin="10,0,0,0" Foreground="#FF555555" FontSize="13"/>
+                            <TextBlock Text="&#xE734;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Foreground="{DynamicResource Warning}" FontSize="14"/>
+                            <TextBlock Text="Starred" Margin="10,0,0,0" Foreground="{DynamicResource TextSecondary}" FontSize="13"/>
                         </StackPanel>
                     </Border>
 
                     <!-- Every other real IMAP folder, read live out of Roundcube's own sidebar.
                          Stays hidden on sample data, where only the fixed folders above exist. -->
                     <StackPanel x:Name="LiveFolderSection" Visibility="Collapsed">
-                        <Border Height="1" Background="#FFEAE5F2" Margin="14,12"/>
+                        <Border Height="1" Background="{DynamicResource AccentSoft}" Margin="14,12"/>
                         <TextBlock Text="FOLDERS" Margin="20,0,0,6" FontSize="10" FontWeight="SemiBold"
-                                   Foreground="#FFA79BC0"/>
+                                   Foreground="{DynamicResource AccentMuted}"/>
                         <ItemsControl x:Name="LiveFolderList">
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate>
@@ -412,12 +430,12 @@
                                                 <ColumnDefinition Width="*"/>
                                                 <ColumnDefinition Width="Auto"/>
                                             </Grid.ColumnDefinitions>
-                                            <TextBlock Text="{Binding Display}" Foreground="#FF555555" FontSize="13"
+                                            <TextBlock Text="{Binding Display}" Foreground="{DynamicResource TextSecondary}" FontSize="13"
                                                        TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
-                                            <Border Grid.Column="1" Background="{StaticResource ThemeAccent}" CornerRadius="8"
+                                            <Border Grid.Column="1" Background="{DynamicResource ThemeAccent}" CornerRadius="8"
                                                     Padding="6,1" VerticalAlignment="Center"
                                                     Visibility="{Binding HasUnread, Converter={StaticResource BoolToVis}}">
-                                                <TextBlock Text="{Binding Unread}" Foreground="White" FontSize="10.5" FontWeight="SemiBold"/>
+                                                <TextBlock Text="{Binding Unread}" Foreground="{DynamicResource SurfaceCard}" FontSize="10.5" FontWeight="SemiBold"/>
                                             </Border>
                                         </Grid>
                                     </Border>
@@ -429,10 +447,10 @@
                 </ScrollViewer>
             </Border>
 
-            <Border Grid.Column="1" Background="#FFEDEDED"/>
+            <Border Grid.Column="1" Background="{DynamicResource SurfaceHover}"/>
 
             <!-- Message list -->
-            <Grid Grid.Column="2" Background="White">
+            <Grid Grid.Column="2" Background="{DynamicResource SurfaceCard}">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="*"/>
@@ -453,7 +471,7 @@
                         <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="*"/>
                     </Grid.ColumnDefinitions>
-                    <TextBlock x:Name="BulkCountText" Grid.Column="0" VerticalAlignment="Center" FontSize="12.5" Foreground="{StaticResource ThemeAccentDeep}" FontWeight="SemiBold"/>
+                    <TextBlock x:Name="BulkCountText" Grid.Column="0" VerticalAlignment="Center" FontSize="12.5" Foreground="{DynamicResource ThemeAccentDeep}" FontWeight="SemiBold"/>
                     <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
                         <Button Content="&#xE715;" Style="{StaticResource IconButton}" ToolTip="Mark as read" AutomationProperties.Name="Mark as read" Click="BulkMarkRead_Click"/>
                         <Button Content="&#xE7B8;" Style="{StaticResource IconButton}" ToolTip="Archive" AutomationProperties.Name="Archive selected" Click="BulkArchive_Click"/>
@@ -464,6 +482,7 @@
                 </Grid>
 
                 <ListBox Grid.Row="1" x:Name="MessageList" BorderThickness="0"
+                         ui:SmoothScroll.Enabled="True"
                          ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                          ScrollViewer.CanContentScroll="True"
                          VirtualizingPanel.IsVirtualizing="True"
@@ -489,10 +508,10 @@
                                         <Setter Property="Background" Value="Transparent"/>
                                         <Style.Triggers>
                                             <DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType=ListBoxItem}, Path=IsMouseOver}" Value="True">
-                                                <Setter Property="Background" Value="#FFFBFAFE"/>
+                                                <Setter Property="Background" Value="{DynamicResource SurfaceAlt}"/>
                                             </DataTrigger>
                                             <DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType=ListBoxItem}, Path=IsSelected}" Value="True">
-                                                <Setter Property="Background" Value="#FFEDE0FA"/>
+                                                <Setter Property="Background" Value="{DynamicResource AccentSoft}"/>
                                             </DataTrigger>
                                         </Style.Triggers>
                                     </Style>
@@ -511,7 +530,7 @@
                                             <Setter Property="Background" Value="Transparent"/>
                                             <Style.Triggers>
                                                 <DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType=ListBoxItem}, Path=IsSelected}" Value="True">
-                                                    <Setter Property="Background" Value="{StaticResource ThemeAccent}"/>
+                                                    <Setter Property="Background" Value="{DynamicResource ThemeAccent}"/>
                                                 </DataTrigger>
                                             </Style.Triggers>
                                         </Style>
@@ -525,6 +544,7 @@
                                      shifting the list over slightly is an acceptable, infrequent
                                      trade for not having a permanent empty gutter. -->
                                 <CheckBox Grid.Column="1" VerticalAlignment="Top" Margin="0,14,10,0" Tag="{Binding}"
+                                          AutomationProperties.Name="{Binding SelectAccessibleName}"
                                           Checked="RowCheck_Changed" Unchecked="RowCheck_Changed"
                                           PreviewMouseLeftButtonDown="StarToggle_PreviewMouseDown">
                                     <CheckBox.Style>
@@ -544,7 +564,7 @@
 
                                 <Border Grid.Column="2" Width="34" Height="34" CornerRadius="17" Margin="10,12,10,0"
                                         Background="{StaticResource AvatarBrush}" VerticalAlignment="Top">
-                                    <TextBlock Text="{Binding Initial}" Foreground="White" FontWeight="SemiBold"
+                                    <TextBlock Text="{Binding Initial}" Foreground="{DynamicResource SurfaceCard}" FontWeight="SemiBold"
                                                HorizontalAlignment="Center" VerticalAlignment="Center"/>
                                 </Border>
 
@@ -555,45 +575,46 @@
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
                                         <StackPanel Orientation="Horizontal" Grid.Column="0">
-                                            <Ellipse Width="7" Height="7" Fill="{StaticResource ThemeAccent}" Margin="0,0,6,0"
+                                            <Ellipse Width="7" Height="7" Fill="{DynamicResource ThemeAccent}" Margin="0,0,6,0"
                                                      Visibility="{Binding Unread, Converter={StaticResource BoolToVis}}"/>
-                                            <TextBlock Text="{Binding Sender}" FontSize="12" Foreground="#FF6B6B6B"
+                                            <TextBlock Text="{Binding Sender}" FontSize="12" Foreground="{DynamicResource TextSecondary}"
                                                        FontWeight="{Binding Unread, Converter={StaticResource UnreadWeight}}"/>
-                                            <Border Background="#FFFBE9D0" CornerRadius="3" Padding="4,0" Margin="6,0,0,0"
+                                            <Border Background="{DynamicResource WarningSoft}" CornerRadius="3" Padding="4,0" Margin="6,0,0,0"
                                                     VerticalAlignment="Center" ToolTip="This sender is outside your organization"
                                                     Visibility="{Binding IsExternalSender, Converter={StaticResource BoolToVis}}">
-                                                <TextBlock Text="External" FontSize="9" FontWeight="SemiBold" Foreground="#FFB06A00"/>
+                                                <TextBlock Text="External" FontSize="9" FontWeight="SemiBold" Foreground="{DynamicResource WarningDeep}"/>
                                             </Border>
                                         </StackPanel>
                                         <StackPanel Grid.Column="1" Orientation="Horizontal">
-                                            <Border Background="{StaticResource ThemeAccentSoft}" CornerRadius="9" Width="18" Height="18"
+                                            <Border Background="{DynamicResource ThemeAccentSoft}" CornerRadius="9" Width="18" Height="18"
                                                     Margin="0,0,6,0" VerticalAlignment="Center" ToolTip="Has attachment"
                                                     Visibility="{Binding HasAttachment, Converter={StaticResource BoolToVis}}">
                                                 <TextBlock Text="&#xE723;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="11"
-                                                           Foreground="{StaticResource ThemeAccentDeep}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                           Foreground="{DynamicResource ThemeAccentDeep}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                                             </Border>
-                                            <TextBlock Text="{Binding Date}" Foreground="#FF9A9A9A" FontSize="11"/>
+                                            <TextBlock Text="{Binding Date}" Foreground="{DynamicResource TextMuted}" FontSize="11"/>
                                         </StackPanel>
                                     </Grid>
-                                    <TextBlock Margin="0,3,0,0" Text="{Binding Subject}" FontSize="13" Foreground="#FF262626"
+                                    <TextBlock Margin="0,3,0,0" Text="{Binding Subject}" FontSize="13" Foreground="{DynamicResource TextPrimary}"
                                                TextTrimming="CharacterEllipsis"
                                                FontWeight="{Binding Unread, Converter={StaticResource UnreadWeight}}"/>
-                                    <TextBlock Text="{Binding Snippet}" FontSize="11" Foreground="#FFAAAAAA"
+                                    <TextBlock Text="{Binding Snippet}" FontSize="11" Foreground="{DynamicResource TextMuted}"
                                                Margin="0,2,0,0" TextTrimming="CharacterEllipsis"/>
                                 </StackPanel>
 
                                 <Button Grid.Column="4" Style="{StaticResource StarToggle}" VerticalAlignment="Top" Margin="0,12,14,0"
+                                        AutomationProperties.Name="{Binding StarAccessibleName}"
                                         Click="StarToggle_Click" Tag="{Binding}"
                                         PreviewMouseLeftButtonDown="StarToggle_PreviewMouseDown">
                                     <TextBlock FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="13">
                                         <TextBlock.Style>
                                             <Style TargetType="TextBlock">
                                                 <Setter Property="Text" Value="&#xE734;"/>
-                                                <Setter Property="Foreground" Value="#FFD5D5D5"/>
+                                                <Setter Property="Foreground" Value="{DynamicResource BorderStrong}"/>
                                                 <Style.Triggers>
                                                     <DataTrigger Binding="{Binding Starred}" Value="True">
                                                         <Setter Property="Text" Value="&#xE735;"/>
-                                                        <Setter Property="Foreground" Value="#FFD4A017"/>
+                                                        <Setter Property="Foreground" Value="{DynamicResource Warning}"/>
                                                     </DataTrigger>
                                                 </Style.Triggers>
                                             </Style>
@@ -605,12 +626,12 @@
                     </ListBox.ItemTemplate>
                 </ListBox>
 
-                <TextBlock Grid.Row="1" x:Name="ListEmptyState" Text="No messages" Foreground="#FFC5C5C5" FontSize="13"
+                <TextBlock Grid.Row="1" x:Name="ListEmptyState" Text="No messages" Foreground="{DynamicResource TextDisabled}" FontSize="13"
                            HorizontalAlignment="Center" VerticalAlignment="Center" Visibility="Collapsed"/>
 
                 <!-- Roundcube paginates server-side, so only one page of rows ever exists in the
                      live DOM — this bar is how anything past the first page is reachable. -->
-                <Border x:Name="PagerBar" Grid.Row="2" BorderBrush="#FFF1F1F1" BorderThickness="0,1,0,0"
+                <Border x:Name="PagerBar" Grid.Row="2" BorderBrush="{DynamicResource SurfaceSunken}" BorderThickness="0,1,0,0"
                         Padding="10,6" Visibility="Collapsed">
                     <Grid>
                         <Grid.ColumnDefinitions>
@@ -621,30 +642,30 @@
                         <Button Grid.Column="0" x:Name="PrevPageButton" Content="&#xE76B;" Style="{StaticResource IconButton}"
                                 Width="28" Height="28" FontSize="11" ToolTip="Previous page" AutomationProperties.Name="Previous page" Click="PrevPage_Click"/>
                         <TextBlock Grid.Column="1" x:Name="PagerText" HorizontalAlignment="Center" VerticalAlignment="Center"
-                                   FontSize="11.5" Foreground="#FF8A8A8A"/>
+                                   FontSize="11.5" Foreground="{DynamicResource TextMuted}"/>
                         <Button Grid.Column="2" x:Name="NextPageButton" Content="&#xE76C;" Style="{StaticResource IconButton}"
                                 Width="28" Height="28" FontSize="11" ToolTip="Next page" AutomationProperties.Name="Next page" Click="NextPage_Click"/>
                     </Grid>
                 </Border>
             </Grid>
 
-            <Border Grid.Column="3" Background="#FFEDEDED"/>
+            <Border Grid.Column="3" Background="{DynamicResource SurfaceHover}"/>
 
             <!-- Reading pane -->
-            <Grid Grid.Column="4" Background="#FFFBFAFC">
+            <Grid Grid.Column="4" Background="{DynamicResource SurfaceAlt}">
                 <StackPanel x:Name="EmptyState" HorizontalAlignment="Center" VerticalAlignment="Center">
-                    <Border Width="72" Height="72" CornerRadius="36" Background="#FFF0EBFA" HorizontalAlignment="Center">
+                    <Border Width="72" Height="72" CornerRadius="36" Background="{DynamicResource AccentSoft}" HorizontalAlignment="Center">
                         <TextBlock Text="&#xE715;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="28"
-                                   Foreground="#FFC3B3EC" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                   Foreground="{DynamicResource AccentPale}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                     </Border>
-                    <TextBlock Text="Select a message to read" Foreground="#FFB5AFC2" FontSize="14"
+                    <TextBlock Text="Select a message to read" Foreground="{DynamicResource TextDisabled}" FontSize="14"
                                HorizontalAlignment="Center" Margin="0,16,0,0"/>
                 </StackPanel>
 
-                <Border x:Name="ReadingCard" Margin="16" Background="White" CornerRadius="12" Visibility="Collapsed"
-                        BorderBrush="#FFEDEDED" BorderThickness="1">
+                <Border x:Name="ReadingCard" Margin="16" Background="{DynamicResource SurfaceCard}" CornerRadius="12" Visibility="Collapsed"
+                        BorderBrush="{DynamicResource SurfaceHover}" BorderThickness="1">
                     <Border.Effect>
-                        <DropShadowEffect Color="#FF000000" Opacity="0.05" BlurRadius="18" ShadowDepth="2"/>
+                        <DropShadowEffect Color="{DynamicResource TextPrimaryColor}" Opacity="0.05" BlurRadius="18" ShadowDepth="2"/>
                     </Border.Effect>
                     <Grid>
                         <Grid.RowDefinitions>
@@ -669,13 +690,13 @@
                                     <Button Content="&#xE8CA;" Style="{StaticResource IconButton}" ToolTip="Reply" AutomationProperties.Name="Reply" Click="ReplyButton_Click"/>
                                     <Button Content="&#xE97A;" Style="{StaticResource IconButton}" ToolTip="Reply all" AutomationProperties.Name="Reply all" Click="ReplyAllButton_Click"/>
                                     <Button Content="&#xE72D;" Style="{StaticResource IconButton}" ToolTip="Forward" AutomationProperties.Name="Forward" Click="ForwardButton_Click"/>
-                                    <Border Width="1" Height="18" Background="#FFEAEAEA" Margin="6,0" VerticalAlignment="Center"/>
+                                    <Border Width="1" Height="18" Background="{DynamicResource SurfaceHover}" Margin="6,0" VerticalAlignment="Center"/>
                                     <Button x:Name="MarkUnreadButton" Content="&#xE715;" Style="{StaticResource IconButton}" ToolTip="Mark as unread" AutomationProperties.Name="Mark as unread" Click="MarkUnreadButton_Click"/>
                                     <Button Content="&#xE7B8;" Style="{StaticResource IconButton}" ToolTip="Archive" AutomationProperties.Name="Archive" Click="ArchiveButton_Click"/>
                                     <Button x:Name="MoveButton" Content="&#xE8DE;" Style="{StaticResource IconButton}" ToolTip="Move to folder…" AutomationProperties.Name="Move to folder" Click="MoveButton_Click"/>
-                                    <Border Width="1" Height="18" Background="#FFEAEAEA" Margin="6,0" VerticalAlignment="Center"/>
+                                    <Border Width="1" Height="18" Background="{DynamicResource SurfaceHover}" Margin="6,0" VerticalAlignment="Center"/>
                                     <Button Content="&#xE8A5;" Style="{StaticResource IconButton}" ToolTip="View source" AutomationProperties.Name="View message source" Click="ViewSourceButton_Click"/>
-                                    <Border Width="1" Height="18" Background="#FFEAEAEA" Margin="6,0" VerticalAlignment="Center"/>
+                                    <Border Width="1" Height="18" Background="{DynamicResource SurfaceHover}" Margin="6,0" VerticalAlignment="Center"/>
                                     <Button Content="&#xE74D;" Style="{StaticResource IconButton}" ToolTip="Delete" AutomationProperties.Name="Delete" Click="DeleteButton_Click"/>
                                 </StackPanel>
                             </Grid>
@@ -686,30 +707,30 @@
                                  the subject and toolbar on one line with nothing hanging below. -->
                             <StackPanel x:Name="ReadingFromRow" Orientation="Horizontal" Margin="0,10,0,0">
                                 <Border x:Name="ReadingAvatarBorder" Width="30" Height="30" CornerRadius="15" Background="{StaticResource AvatarBrush}">
-                                    <TextBlock x:Name="ReadingAvatarInitial" Foreground="White" FontWeight="SemiBold" FontSize="12"
+                                    <TextBlock x:Name="ReadingAvatarInitial" Foreground="{DynamicResource SurfaceCard}" FontWeight="SemiBold" FontSize="12"
                                                HorizontalAlignment="Center" VerticalAlignment="Center"/>
                                 </Border>
                                 <StackPanel x:Name="ReadingFromPanel" Margin="10,0,0,0" VerticalAlignment="Center">
-                                    <TextBlock x:Name="ReadingFrom" FontSize="12.5" Foreground="#FF444444"/>
-                                    <TextBlock x:Name="ReadingDate" FontSize="11" Foreground="#FF9A9A9A"/>
+                                    <TextBlock x:Name="ReadingFrom" FontSize="12.5" Foreground="{DynamicResource TextBody}"/>
+                                    <TextBlock x:Name="ReadingDate" FontSize="11" Foreground="{DynamicResource TextMuted}"/>
                                 </StackPanel>
                             </StackPanel>
                         </StackPanel>
 
-                        <Border Grid.Row="0" VerticalAlignment="Bottom" Height="1" Background="#FFF0F0F0" Margin="24,0"/>
+                        <Border Grid.Row="0" VerticalAlignment="Bottom" Height="1" Background="{DynamicResource SurfaceSunken}" Margin="24,0"/>
 
                         <StackPanel Grid.Row="1">
                             <!-- Sent from outside your own organisation's domain — a quiet visual
                                  cue (not a blocker), the same convention Outlook/Gmail use for
                                  "this message is from an external sender". Internal mail shows no
                                  bar at all, so this only ever adds friction where it's warranted. -->
-                            <Border x:Name="ExternalSenderBar" Background="#FFEFF3FD" CornerRadius="6"
+                            <Border x:Name="ExternalSenderBar" Background="{DynamicResource InfoSoft}" CornerRadius="6"
                                     Margin="24,10,24,0" Padding="10,6" Visibility="Collapsed">
                                 <StackPanel Orientation="Horizontal">
                                     <TextBlock Text="&#xE774;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
-                                               FontSize="12" Foreground="#FF3A5FA0" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                               FontSize="12" Foreground="{DynamicResource Info}" VerticalAlignment="Center" Margin="0,0,8,0"/>
                                     <TextBlock Text="This message came from outside your organisation" FontSize="12"
-                                               Foreground="#FF3A5FA0" VerticalAlignment="Center"/>
+                                               Foreground="{DynamicResource Info}" VerticalAlignment="Center"/>
                                 </StackPanel>
                             </Border>
 
@@ -717,7 +738,7 @@
                                  meeting card (platform, title, and date/time pulled from the
                                  surrounding text) the way Gmail promotes a calendar invite to the
                                  top, instead of just saying "this message contains a link". -->
-                            <Border x:Name="MeetingBar" Background="#FFE9F7EF" CornerRadius="8"
+                            <Border x:Name="MeetingBar" Background="{DynamicResource SuccessSoft}" CornerRadius="8"
                                     Margin="24,10,24,0" Padding="12,10" Visibility="Collapsed">
                                 <Grid>
                                     <Grid.ColumnDefinitions>
@@ -726,35 +747,35 @@
                                         <ColumnDefinition Width="Auto"/>
                                     </Grid.ColumnDefinitions>
                                     <Border Grid.Column="0" Width="34" Height="34" CornerRadius="8" Margin="0,0,10,0"
-                                            Background="{StaticResource ThemeAccent}" VerticalAlignment="Center">
+                                            Background="{DynamicResource ThemeAccent}" VerticalAlignment="Center">
                                         <TextBlock x:Name="MeetingBarIcon" Text="&#xE787;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
-                                                   FontSize="15" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                   FontSize="15" Foreground="{DynamicResource SurfaceCard}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                                     </Border>
                                     <StackPanel Grid.Column="1" VerticalAlignment="Center">
                                         <TextBlock x:Name="MeetingBarTitle" Text="Meeting" FontSize="13" FontWeight="SemiBold"
-                                                   Foreground="#FF1F3D2C" TextTrimming="CharacterEllipsis"/>
+                                                   Foreground="{DynamicResource SuccessDeep}" TextTrimming="CharacterEllipsis"/>
                                         <TextBlock x:Name="MeetingBarSubtext" Text="Zoom meeting" FontSize="11.5"
-                                                   Foreground="#FF4F7A5F" Margin="0,2,0,0"/>
+                                                   Foreground="{DynamicResource Success}" Margin="0,2,0,0"/>
                                     </StackPanel>
                                     <Button x:Name="JoinMeetingButton" Grid.Column="2" Click="JoinMeetingButton_Click" Cursor="Hand" VerticalAlignment="Center"
                                             Background="Transparent" BorderThickness="0" Padding="0">
-                                        <Border Background="{StaticResource ThemeAccent}" CornerRadius="6" Padding="14,7">
-                                            <TextBlock Text="Join" FontSize="12" FontWeight="SemiBold" Foreground="White"/>
+                                        <Border Background="{DynamicResource ThemeAccent}" CornerRadius="6" Padding="14,7">
+                                            <TextBlock Text="Join" FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource SurfaceCard}"/>
                                         </Border>
                                     </Button>
                                 </Grid>
                             </Border>
 
-                            <Border x:Name="ImagesBlockedBar" Background="#FFFDF6E3" CornerRadius="6"
+                            <Border x:Name="ImagesBlockedBar" Background="{DynamicResource WarningSoft}" CornerRadius="6"
                                     Margin="24,10,24,0" Padding="10,6" Visibility="Collapsed">
                                 <Grid>
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*"/>
                                         <ColumnDefinition Width="Auto"/>
                                     </Grid.ColumnDefinitions>
-                                    <TextBlock Text="Images are hidden to protect your privacy" FontSize="12" Foreground="#FF8A6D1D" VerticalAlignment="Center"/>
+                                    <TextBlock Text="Images are hidden to protect your privacy" FontSize="12" Foreground="{DynamicResource WarningDeep}" VerticalAlignment="Center"/>
                                     <Button Grid.Column="1" Content="Show images" FontSize="12" Background="Transparent" BorderThickness="0"
-                                            Foreground="{StaticResource ThemeAccentDeep}" Cursor="Hand" Click="ShowImagesButton_Click"/>
+                                            Foreground="{DynamicResource ThemeAccentDeep}" Cursor="Hand" Click="ShowImagesButton_Click"/>
                                 </Grid>
                             </Border>
                         </StackPanel>
@@ -774,13 +795,13 @@
 
         <!-- Undo-send snackbar (Gmail-style: sending is delayed a few seconds, cancellable) -->
         <Border x:Name="SendSnackbar" Grid.Row="2" VerticalAlignment="Bottom" HorizontalAlignment="Left"
-                Margin="24" Background="#FF323232" CornerRadius="8" Padding="16,11" Visibility="Collapsed">
+                Margin="24" Background="{DynamicResource TextPrimary}" CornerRadius="8" Padding="16,11" Visibility="Collapsed">
             <Border.Effect>
-                <DropShadowEffect Color="#FF000000" Opacity="0.25" BlurRadius="16" ShadowDepth="3"/>
+                <DropShadowEffect Color="{DynamicResource TextPrimaryColor}" Opacity="0.25" BlurRadius="16" ShadowDepth="3"/>
             </Border.Effect>
             <StackPanel Orientation="Horizontal">
-                <TextBlock x:Name="SendSnackbarText" Text="Message sent" Foreground="White" FontSize="13" VerticalAlignment="Center"/>
-                <Button Content="UNDO" Margin="24,0,0,0" Background="Transparent" Foreground="#FFC4A6F5" BorderThickness="0"
+                <TextBlock x:Name="SendSnackbarText" Text="Message sent" Foreground="{DynamicResource SurfaceCard}" FontSize="13" VerticalAlignment="Center"/>
+                <Button Content="UNDO" Margin="24,0,0,0" Background="Transparent" Foreground="{DynamicResource AccentPale}" BorderThickness="0"
                         FontWeight="SemiBold" FontSize="12" Cursor="Hand" Click="UndoSend_Click"/>
             </StackPanel>
         </Border>

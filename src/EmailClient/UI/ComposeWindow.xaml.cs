@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Markup;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using EmailClient.Automation;
@@ -64,7 +65,7 @@ public partial class ComposeWindow : Window
     /// index. Null on sample data or before that index has anything to offer — the To/Cc/Bcc
     /// fields just behave as plain text boxes then.
     /// </summary>
-    public Func<string, IReadOnlyList<string>>? SuggestContacts { get; set; }
+    public Func<string, IReadOnlyList<EmailClient.Mail.ContactEntry>>? SuggestContacts { get; set; }
 
     /// <summary>
     /// Backs the address-book picker (Apple Mail's "Address" button) — the *full* browsable list,
@@ -79,6 +80,14 @@ public partial class ComposeWindow : Window
     /// typed since the last manual save. Null on sample data, where there's nothing to protect.
     /// </summary>
     public Func<ComposeResult, Task>? AutoSaveDraft { get; set; }
+
+    /// <summary>
+    /// Explicit "save right now" — the Save Draft button, and the Save choice on the
+    /// close-confirmation prompt. Unlike <see cref="AutoSaveDraft"/> this is wired for sample data
+    /// too (an explicit user action should give real feedback regardless of backend), and returns
+    /// whether it actually worked so the caller can show that feedback accurately.
+    /// </summary>
+    public Func<ComposeResult, Task<bool>>? SaveDraftNow { get; set; }
 
     private readonly System.Windows.Threading.DispatcherTimer _autosaveTimer =
         new() { Interval = TimeSpan.FromSeconds(30) };
@@ -146,6 +155,11 @@ public partial class ComposeWindow : Window
         html, body { height: 100%; margin: 0; background: #ffffff; color: #1f1f1f; }
         body { font-family: 'Segoe UI', system-ui, sans-serif; font-size: 14px; line-height: 1.55; }
         #editor { min-height: 100%; padding: 14px 16px; outline: none; box-sizing: border-box; }
+        /* Every plain-text line becomes its own <p> (see PlainTextToHtml), and the pre-signature
+           lead-in is an empty <p><br></p> — meant to read as "one line". Without this reset, the
+           browser's default ~1em top+bottom <p> margin turns that into a visibly huge gap. line-height
+           above already carries the actual line spacing. -->
+        p { margin: 0; }
         blockquote { margin: 0 0 0 10px; padding: 0 0 0 12px; border-left: 3px solid #ddd; color: #555; }
         img { max-width: 100%; height: auto; }
         a { color: #6d28d9; }
@@ -266,29 +280,63 @@ public partial class ComposeWindow : Window
                 });
                 post();
             };
-            // Hovering a font option in the picker previews it in place — applied as a real (but
-            // undoable) execCommand so the actual rendering engine picks the font. previewFontName
-            // undoes whatever the last hover applied before applying the new one, so hovering across
-            // several options in a row doesn't stack undo history; cancelFontPreview undoes the last
-            // one if the dropdown closes without a click ever committing it.
-            let previewApplied = false;
+            // Hovering a font option in the picker previews it in place, Google Docs-style.
+            // Deliberately NOT execCommand-based: opening the ComboBox (and every hover within it)
+            // moves real host-level focus off the WebView2 control onto the ComboBox itself, and
+            // Chromium's execCommand silently no-ops on a document that isn't genuinely
+            // host-focused — forcing focus back would work, but a ComboBox closes its own dropdown
+            // the moment its item loses focus, which would collapse the picker on the very first
+            // hover. Plain DOM/Range manipulation has no such focus requirement, so the preview
+            // wraps the selection in one marker span once and just restyles it on every hover.
+            let previewSpan = null;
+
+            function wrapSelectionForPreview() {
+                const selection = window.getSelection();
+                if (selection.rangeCount === 0)
+                    return null;
+                const range = selection.getRangeAt(0);
+                if (range.collapsed || !editor.contains(range.commonAncestorContainer))
+                    return null;
+                const span = document.createElement("span");
+                try {
+                    range.surroundContents(span);
+                } catch (err) {
+                    // surroundContents throws when the range's boundaries partially overlap an
+                    // element rather than cleanly containing whole nodes (e.g. a selection that
+                    // starts inside one <b> run and ends inside plain text after it) — extract and
+                    // re-insert through the span instead, which handles that split case too.
+                    const contents = range.extractContents();
+                    span.appendChild(contents);
+                    range.insertNode(span);
+                }
+                return span;
+            }
+
             window.previewFontName = function(family) {
-                editor.focus();
-                ensureSelection();
-                if (previewApplied)
-                    document.execCommand("undo");
-                document.execCommand("fontName", false, family);
-                previewApplied = true;
+                previewSpan ??= wrapSelectionForPreview();
+                if (previewSpan)
+                    previewSpan.style.fontFamily = family;
             };
             window.cancelFontPreview = function() {
-                if (previewApplied) {
-                    document.execCommand("undo");
-                    previewApplied = false;
-                    post();
-                }
+                if (!previewSpan)
+                    return;
+                const parent = previewSpan.parentNode;
+                while (previewSpan.firstChild)
+                    parent.insertBefore(previewSpan.firstChild, previewSpan);
+                parent.removeChild(previewSpan);
+                parent.normalize();
+                previewSpan = null;
             };
-            window.commitFontPreview = function() {
-                previewApplied = false;
+            // Also the path for a font chosen without ever hovering it first (keyboard-only
+            // navigation inside the open dropdown never fires MouseEnter) — wraps fresh if no
+            // preview is already in progress, otherwise just finalises the hovered one.
+            window.commitFontPreview = function(family) {
+                previewSpan ??= wrapSelectionForPreview();
+                if (previewSpan)
+                    previewSpan.style.fontFamily = family;
+                previewSpan = null;
+                editor.focus();
+                post();
             };
         })();
         </script>
@@ -557,6 +605,19 @@ public partial class ComposeWindow : Window
     /// <summary>Rounded-square swatch with a soft resting shadow and a hover "lift" (scale up +
     /// a brighter ring) — the small tactile motion modern colour pickers (Notion, Linear, Figma)
     /// use in place of Sheets' flat hover-only ring.</summary>
+    /// <summary>The "No Fill / No Color" slash, drawn to match the surrounding swatch's own
+    /// palette (the app's existing Danger red — the same colour delete/error actions already use
+    /// elsewhere, rather than a one-off).</summary>
+    private static System.Windows.UIElement BuildNoneGlyph() => new System.Windows.Shapes.Line
+    {
+        X1 = 3, Y1 = 13, X2 = 13, Y2 = 3,
+        Stroke = (System.Windows.Media.Brush)System.Windows.Application.Current.FindResource("Danger"),
+        StrokeThickness = 1.4,
+        StrokeStartLineCap = System.Windows.Media.PenLineCap.Round,
+        StrokeEndLineCap = System.Windows.Media.PenLineCap.Round,
+        SnapsToDevicePixels = true,
+    };
+
     private static System.Windows.Controls.Button MakeSwatchButton(string hex, string name, bool isNone, double size = 18)
     {
         var swatch = new System.Windows.Controls.Button
@@ -570,11 +631,18 @@ public partial class ComposeWindow : Window
             Cursor = System.Windows.Input.Cursors.Hand,
             Tag = hex,
             ToolTip = name,
-            Content = isNone ? "✕" : null,
-            FontSize = 8,
-            Foreground = System.Windows.Media.Brushes.Gray,
+            // The universal "No Fill / No Color" glyph (Word, PowerPoint, Excel all use it): a
+            // plain box with a diagonal slash, not a generic X mark — an X reads as "delete this",
+            // the slash reads as "there is nothing here", which is the actual meaning.
+            Content = isNone ? BuildNoneGlyph() : null,
             RenderTransformOrigin = new System.Windows.Point(0.5, 0.5),
             RenderTransform = new ScaleTransform(1, 1),
+            // Without these, an 18px square with a 1px rounded border anti-aliases onto a
+            // fractional device pixel on anything but a 100%-scaled display, which reads as a
+            // faint blur on every single swatch in the grid — this is what a report of "the
+            // colours look blurry" traces back to, not a rendering-quality setting anywhere else.
+            UseLayoutRounding = true,
+            SnapsToDevicePixels = true,
         };
         swatch.SetValue(System.Windows.Automation.AutomationProperties.NameProperty, name);
         var template = new ControlTemplate(typeof(System.Windows.Controls.Button));
@@ -583,8 +651,14 @@ public partial class ComposeWindow : Window
         border.SetValue(Border.BorderBrushProperty, new TemplateBindingExtension(System.Windows.Controls.Control.BorderBrushProperty));
         border.SetValue(Border.BorderThicknessProperty, new TemplateBindingExtension(System.Windows.Controls.Control.BorderThicknessProperty));
         border.SetValue(Border.CornerRadiusProperty, new CornerRadius(5));
-        border.SetValue(Border.EffectProperty, new System.Windows.Media.Effects.DropShadowEffect
-            { Color = System.Windows.Media.Colors.Black, Opacity = 0.12, BlurRadius = 3, ShadowDepth = 1 });
+        border.SetValue(Border.SnapsToDevicePixelsProperty, true);
+        border.SetValue(Border.ClipToBoundsProperty, true);
+        // No shadow at rest — a permanent DropShadowEffect (BlurRadius 3) used to sit on every
+        // swatch even when idle, which is the other half of the same "blurry" report: on a tile
+        // this small, tiled edge-to-edge with 2px margins across a whole hue/shade grid, a soft
+        // shadow around each one reads as softened edges rather than depth. The existing hover
+        // trigger below (a crisper, thicker accent border) is enough feedback on its own — flat
+        // swatches at rest is also what the Google Sheets/Docs picker this is modelled on does.
         var presenter = new FrameworkElementFactory(typeof(ContentPresenter));
         presenter.SetValue(ContentPresenter.HorizontalAlignmentProperty, System.Windows.HorizontalAlignment.Center);
         presenter.SetValue(ContentPresenter.VerticalAlignmentProperty, System.Windows.VerticalAlignment.Center);
@@ -952,7 +1026,16 @@ public partial class ComposeWindow : Window
     {
         var win = new Window
         {
-            Owner = this,
+            // Deliberately NOT owned by this window. An owned, ShowInTaskbar=false window is a
+            // documented WPF/Win32 trap: when it loses activation to anything outside its own
+            // owner chain (clicking the desktop, another app, even just clicking back on its
+            // owner in some cases), Windows' owned-window activation model can cascade a minimize
+            // onto the *owner* — which is exactly "click outside the colour picker and the whole
+            // compose window minimizes". Topmost gets the same "always above Compose" visual
+            // result without an owner relationship for that cascade to ride on; the explicit
+            // Closed hook below replaces the auto-close-with-owner behaviour Owner used to give
+            // for free.
+            Topmost = true,
             WindowStyle = WindowStyle.None,
             ResizeMode = ResizeMode.NoResize,
             ShowInTaskbar = false,
@@ -968,14 +1051,18 @@ public partial class ComposeWindow : Window
             },
         };
         win.Loaded += (_, _) => EmailClient.UI.WindowCorners.Apply(win);
-        win.Deactivated += (_, _) =>
+
+        void SafeClose()
         {
             // Closing the window itself (e.g. picking a swatch) also fires Deactivated on the way
-            // out — without this, that raced with the close already in progress and threw "Cannot
-            // ... Close ... while a Window is closing".
+            // out — without the guard, that raced with the close already in progress and threw
+            // "Cannot ... Close ... while a Window is closing". Also reached if this compose
+            // window closes while the popup is still open (no Owner to auto-close it now).
             try { win.Close(); }
-            catch (InvalidOperationException) { /* already closing */ }
-        };
+            catch (InvalidOperationException) { /* already closing or already closed */ }
+        }
+        win.Deactivated += (_, _) => SafeClose();
+        Closed += (_, _) => SafeClose();
 
         var topLeft = anchor.PointToScreen(new System.Windows.Point(0, anchor.ActualHeight + 6));
         var source = PresentationSource.FromVisual(this);
@@ -989,6 +1076,14 @@ public partial class ComposeWindow : Window
 
     private void ColourButton_Click(object sender, RoutedEventArgs e)
     {
+        // The click that opens this popup while the *other* one is already open would otherwise
+        // just deactivate-and-close that other popup (via its own Deactivated handler) without this
+        // click going on to open anything — same click, two popups fighting over it. Closing the
+        // sibling explicitly here means this click always ends with the popup the user just clicked
+        // for actually open, not just whichever one used to be open now being closed.
+        if (_highlightPopup is { IsVisible: true } otherOpen)
+            otherOpen.Close();
+
         if (_colourPopup is { IsVisible: true } open)
         {
             open.Close();
@@ -1006,6 +1101,9 @@ public partial class ComposeWindow : Window
 
     private void HighlightButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_colourPopup is { IsVisible: true } otherOpen)
+            otherOpen.Close();
+
         if (_highlightPopup is { IsVisible: true } open)
         {
             open.Close();
@@ -1056,8 +1154,12 @@ public partial class ComposeWindow : Window
             Padding = new Thickness(8, 6, 8, 6),
             FontSize = 12.5,
             BorderThickness = new Thickness(0, 0, 0, 1),
-            BorderBrush = new SolidColorBrush(System.Windows.Media.Color.FromRgb(0xED, 0xED, 0xF2)),
+            BorderBrush = (System.Windows.Media.Brush)FindResource("BorderSubtle"),
             Tag = "Search contacts",
+            // WPF only shows the caret cursor automatically over a TextBox's actual content region,
+            // not its Padding — without this, hovering the field's edges (most of its clickable
+            // area, given the 8/6 padding) shows a plain arrow instead of an I-beam.
+            Cursor = System.Windows.Input.Cursors.IBeam,
         };
         _contactsSearchBox.TextChanged += (_, _) =>
         {
@@ -1072,7 +1174,10 @@ public partial class ComposeWindow : Window
         {
             BorderThickness = new Thickness(0),
             MaxHeight = 260,
-            DisplayMemberPath = nameof(EmailClient.Mail.ContactEntry.Formatted),
+            // Same avatar-and-two-line row as the type-ahead dropdown (ShowSuggestions) — one
+            // person should look like the same person wherever they're offered from.
+            ItemTemplate = ContactRowTemplate,
+            ItemContainerStyle = ContactItemContainerStyle,
         };
         _contactsList.PreviewMouseLeftButtonUp += (_, _) => CommitContactSelection();
         _contactsList.PreviewKeyDown += (_, e) =>
@@ -1095,8 +1200,8 @@ public partial class ComposeWindow : Window
                     { Opacity = 0.15, BlurRadius = 16, ShadowDepth = 3 },
                 Child = new Border
                 {
-                    Background = System.Windows.Media.Brushes.White,
-                    BorderBrush = new SolidColorBrush(System.Windows.Media.Color.FromRgb(0xE2, 0xDD, 0xF0)),
+                    Background = (System.Windows.Media.Brush)FindResource("SurfaceCard"),
+                    BorderBrush = (System.Windows.Media.Brush)FindResource("Border"),
                     BorderThickness = new Thickness(1),
                     CornerRadius = new CornerRadius(8),
                     ClipToBounds = true,
@@ -1119,13 +1224,10 @@ public partial class ComposeWindow : Window
             return;
 
         var box = _lastFocusedRecipientBox;
-        box.Text = string.IsNullOrWhiteSpace(box.Text)
-            ? contact.Formatted
-            : $"{box.Text.TrimEnd().TrimEnd(',')}, {contact.Formatted}";
-        box.CaretIndex = box.Text.Length;
+        box.AddRecipient(contact.DisplayName, contact.Address);
 
         _contactsPopup!.IsOpen = false;
-        box.Focus();
+        box.InputTextBox.Focus();
     }
 
     // ---- Emoji ------------------------------------------------------------------------------
@@ -1315,8 +1417,10 @@ public partial class ComposeWindow : Window
     {
         if (!_editorReady || FontCombo.SelectedItem is not System.Windows.Controls.ComboBoxItem { Tag: string family })
             return;
-        await ExecAsync("fontName", family);
-        await RichEditor.CoreWebView2.ExecuteScriptAsync("commitFontPreview()");
+        // No execCommand here — commitFontPreview finalises (or, for a keyboard-only choice with
+        // no prior hover, creates) the same DOM-based font span previewFontName uses, which unlike
+        // execCommand doesn't depend on the WebView2 control actually holding host-level focus.
+        await RichEditor.CoreWebView2.ExecuteScriptAsync($"commitFontPreview({System.Text.Json.JsonSerializer.Serialize(family)})");
     }
 
     private async void FontComboItem_MouseEnter(object sender, System.Windows.Input.MouseEventArgs e)
@@ -1416,6 +1520,14 @@ public partial class ComposeWindow : Window
             return;
         }
 
+        // LinkBox held real WPF/Win32 focus while the URL was typed. The JS side's own
+        // editor.focus() call (inside exec(), see the embedded script) only claims focus within
+        // WebView2's content process — it can't reclaim actual host-level focus from a sibling WPF
+        // control, and execCommand silently no-ops on a document that isn't genuinely
+        // host-focused. Without this, "Insert link" alone (the one formatting command that routes
+        // through a separate WPF field first) would do nothing, while every other toolbar button —
+        // a single click, no competing focus holder — worked fine.
+        RichEditor.Focus();
         await ExecAsync("createLink", parsed.AbsoluteUri);
     }
 
@@ -1552,15 +1664,14 @@ public partial class ComposeWindow : Window
     /// starts at the very top of the body — above the quoted original, which is where the reply
     /// actually gets written. Landing after the quote would mean scrolling up before typing.
     /// </summary>
+    /// <summary>
+    /// Always the body — a new blank message used to default into To instead (on the reasoning
+    /// that an empty recipient needs filling in first), but that's not how anyone actually starts
+    /// writing a message: the first thing typed is what it's about, with recipients added via the
+    /// autocomplete afterward either way.
+    /// </summary>
     private async void PlaceInitialFocus()
     {
-        if (string.IsNullOrWhiteSpace(ToBox.Text))
-        {
-            ToBox.Focus();
-            ToBox.CaretIndex = ToBox.Text.Length;
-            return;
-        }
-
         if (_plainTextMode || !_editorReady)
         {
             PlainEditor.Focus();
@@ -1580,33 +1691,49 @@ public partial class ComposeWindow : Window
     /// mail history that match the token currently being typed (the segment after the last comma).
     /// Picking one replaces just that token, leaving anything typed before it alone.
     /// </summary>
-    private System.Windows.Controls.Primitives.Popup? _suggestPopup;
+    // A real Window rather than a Popup — see ShowFloatingWindow's comment: a Popup anchored in
+    // this compose window can't get genuine per-pixel transparency once WebView2 is hosted
+    // anywhere in the tree, so its rounded corners rendered as solid black artifacts instead of
+    // see-through. Built once and reused via Show()/Hide() (not Close()) since this reopens on
+    // every keystroke while typing a recipient — recreating a top-level window that often would
+    // be wasteful and would lose the current keyboard selection each time.
+    private Window? _suggestPopup;
     private System.Windows.Controls.ListBox? _suggestList;
-    private System.Windows.Controls.TextBox? _suggestTarget;
+    private RecipientBox? _suggestTarget;
 
     // Which recipient field the address-book picker adds a clicked contact to — whichever of
     // To/Cc/Bcc was focused most recently, defaulting to To before any of them ever were.
-    private System.Windows.Controls.TextBox _lastFocusedRecipientBox = null!;
+    private RecipientBox _lastFocusedRecipientBox = null!;
+
+    // Built once and shared by both this dropdown and the address-book picker below, so a
+    // contact reads identically wherever it's suggested from.
+    private DataTemplate? _contactRowTemplate;
+    private Style? _contactItemContainerStyle;
 
     private void WireRecipientAutocomplete()
     {
         _lastFocusedRecipientBox = ToBox;
         foreach (var box in new[] { ToBox, CcBox, BccBox })
         {
-            box.TextChanged += RecipientBox_TextChanged;
-            box.PreviewKeyDown += RecipientBox_PreviewKeyDown;
+            box.TextChanged += (_, _) => RecipientInput_TextChanged(box);
+            box.InputTextBox.PreviewKeyDown += RecipientBox_PreviewKeyDown;
             box.LostFocus += (_, _) => HideSuggestions();
             box.GotFocus += (_, _) => _lastFocusedRecipientBox = box;
         }
     }
 
-    private void RecipientBox_TextChanged(object sender, TextChangedEventArgs e)
+    /// <summary>
+    /// Unlike the old plain-TextBox version, the input here only ever holds the one token still
+    /// being typed — every already-committed recipient is its own chip, not sharing the same text
+    /// — so there's no more "find the segment after the last comma" work to do first.
+    /// </summary>
+    private void RecipientInput_TextChanged(RecipientBox box)
     {
-        if (SuggestContacts is null || sender is not System.Windows.Controls.TextBox box)
+        if (SuggestContacts is null)
             return;
 
-        var token = CurrentToken(box);
-        if (string.IsNullOrWhiteSpace(token) || token.Length < 2)
+        var token = box.InputTextBox.Text.Trim();
+        if (token.Length < 2)
         {
             HideSuggestions();
             return;
@@ -1622,76 +1749,169 @@ public partial class ComposeWindow : Window
         ShowSuggestions(box, matches);
     }
 
-    private static string CurrentToken(System.Windows.Controls.TextBox box)
-    {
-        var upToCaret = box.Text[..Math.Min(box.CaretIndex, box.Text.Length)];
-        var lastComma = upToCaret.LastIndexOf(',');
-        return upToCaret[(lastComma + 1)..].Trim();
-    }
+    /// <summary>
+    /// A person, not a formatted string: an avatar-circle initial (matching the message list's own
+    /// sender avatars), the name in the primary line, the address underneath in a muted second line
+    /// — or just the address alone when there's no name on file, rather than repeating it twice.
+    /// Built once via <c>XamlReader.Parse</c> and reused, rather than as a raw ListBox
+    /// <c>DisplayMemberPath</c> string — the previous version, which showed nothing but plain
+    /// "Name &lt;address&gt;" text in the OS's own default (unstyled) list chrome.
+    /// </summary>
+    private DataTemplate ContactRowTemplate => _contactRowTemplate ??= (DataTemplate)XamlReader.Parse("""
+        <DataTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+            <!-- FontFamily is inherited, so setting it once here (rather than on each TextBlock)
+                 covers both lines. Segoe UI alone has no glyphs for Devanagari/other Indic
+                 scripts a real contact's display name can be in — without a fallback, those
+                 names rendered as a row of tofu boxes instead of the actual name. -->
+            <Grid Margin="0" TextElement.FontFamily="Segoe UI, Nirmala UI, Segoe UI Emoji">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <Border Width="26" Height="26" CornerRadius="13" VerticalAlignment="Center">
+                    <Border.Background>
+                        <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                            <GradientStop Color="{DynamicResource AccentLightColor}" Offset="0"/>
+                            <GradientStop Color="{DynamicResource AccentColor}" Offset="1"/>
+                        </LinearGradientBrush>
+                    </Border.Background>
+                    <TextBlock Text="{Binding Initial}" FontWeight="SemiBold" FontSize="11.5"
+                               Foreground="{DynamicResource SurfaceCard}"
+                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                </Border>
+                <StackPanel Grid.Column="1" Margin="9,0,0,0" VerticalAlignment="Center">
+                    <TextBlock Text="{Binding DisplayName}" FontSize="13"
+                               Foreground="{DynamicResource TextPrimary}" TextTrimming="CharacterEllipsis"/>
+                    <TextBlock x:Name="AddressLine" Text="{Binding Address}" FontSize="11" Margin="0,1,0,0"
+                               Foreground="{DynamicResource TextMuted}" TextTrimming="CharacterEllipsis"/>
+                </StackPanel>
+            </Grid>
+            <DataTemplate.Triggers>
+                <DataTrigger Binding="{Binding HasName}" Value="False">
+                    <Setter TargetName="AddressLine" Property="Visibility" Value="Collapsed"/>
+                </DataTrigger>
+            </DataTemplate.Triggers>
+        </DataTemplate>
+        """);
 
-    private void ShowSuggestions(System.Windows.Controls.TextBox box, IReadOnlyList<string> matches)
+    /// <summary>
+    /// Replaces the ListBoxItem's default chrome (which ignores plain Background setters for its
+    /// own selection highlight, and paints it in the OS accent colour — a blue rectangle in a
+    /// purple-themed app) with a plain rounded Border, so hover and keyboard-selection states can
+    /// use the app's own palette instead.
+    /// </summary>
+    private Style ContactItemContainerStyle => _contactItemContainerStyle ??= (Style)XamlReader.Parse("""
+        <Style xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+               xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+               TargetType="ListBoxItem">
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ListBoxItem">
+                        <Border x:Name="Bd" Background="Transparent" CornerRadius="6"
+                                Padding="8,6" Margin="4,1" SnapsToDevicePixels="True">
+                            <ContentPresenter/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource SurfaceHover}"/>
+                            </Trigger>
+                            <!-- The row Enter would commit right now — the same "current pick"
+                                 highlight a keyboard Up/Down needs, distinct from mouse hover. -->
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource AccentSoft}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        """);
+
+    private void ShowSuggestions(RecipientBox box, IReadOnlyList<EmailClient.Mail.ContactEntry> matches)
     {
         _suggestTarget = box;
+        // While the popup is open, Enter/Tab/comma on the input should pick the highlighted
+        // suggestion (via RecipientBox_PreviewKeyDown below) rather than the control also trying
+        // to commit whatever's typed as its own raw chip at the same time.
+        box.SuppressAutoCommit = true;
 
         if (_suggestPopup is null)
         {
-            _suggestList = new System.Windows.Controls.ListBox { BorderThickness = new Thickness(1) };
-            _suggestList.PreviewMouseLeftButtonUp += (_, _) => CommitSuggestion();
-            _suggestPopup = new System.Windows.Controls.Primitives.Popup
+            _suggestList = new System.Windows.Controls.ListBox
             {
-                // See BuildColourPopup's comment for why the shadow and the clipped/rounded
-                // content live on two separate, nested Borders rather than one.
-                Child = new Border
-                {
-                    Effect = new System.Windows.Media.Effects.DropShadowEffect
-                        { Opacity = 0.12, BlurRadius = 14, ShadowDepth = 2 },
-                    Child = new Border
-                    {
-                        Background = System.Windows.Media.Brushes.White,
-                        BorderBrush = new SolidColorBrush(System.Windows.Media.Color.FromRgb(0xE2, 0xDD, 0xF0)),
-                        BorderThickness = new Thickness(1),
-                        CornerRadius = new CornerRadius(6),
-                        ClipToBounds = true,
-                        Child = _suggestList,
-                    },
-                },
-                PlacementTarget = box,
-                Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom,
-                StaysOpen = false,
+                BorderThickness = new Thickness(0),
+                ItemTemplate = ContactRowTemplate,
+                ItemContainerStyle = ContactItemContainerStyle,
             };
+            _suggestList.PreviewMouseLeftButtonUp += (_, _) => CommitSuggestion();
+            var popup = new Window
+            {
+                // ShowActivated only governs the moment Show() is called — on its own it does
+                // nothing to stop a later mouse click on this window from activating it and
+                // stealing focus away from the recipient input mid-click, which would fire that
+                // field's own LostFocus (see WireRecipientAutocomplete) and hide this popup before
+                // the click's Up half ever reaches CommitSuggestion. NoActivateWindow below (applied
+                // in SourceInitialized) is what actually makes clicking this window never activate
+                // it, the standard WS_EX_NOACTIVATE technique IntelliSense-style popups use.
+                ShowActivated = false,
+                Topmost = true,
+                WindowStyle = WindowStyle.None,
+                ResizeMode = ResizeMode.NoResize,
+                ShowInTaskbar = false,
+                SizeToContent = SizeToContent.WidthAndHeight,
+                // Same recipe as ShowFloatingWindow: opaque, DWM-rounded via WindowCorners.Apply
+                // below, not AllowsTransparency — a Window here doesn't hit the same WebView2
+                // transparency loss a Popup does, but AllowsTransparency drops hardware
+                // acceleration for the whole window regardless, so it's avoided anyway.
+                Background = (System.Windows.Media.Brush)FindResource("SurfaceCard"),
+                Content = new Border
+                {
+                    BorderBrush = (System.Windows.Media.Brush)FindResource("Border"),
+                    BorderThickness = new Thickness(1),
+                    CornerRadius = new CornerRadius(8),
+                    ClipToBounds = true,
+                    Child = _suggestList,
+                },
+            };
+            popup.Loaded += (_, _) => EmailClient.UI.WindowCorners.Apply(popup);
+            popup.SourceInitialized += (_, _) => EmailClient.UI.NoActivateWindow.Apply(popup);
+            _suggestPopup = popup;
         }
 
         _suggestList!.ItemsSource = matches;
         _suggestList.SelectedIndex = 0;
-        _suggestPopup.PlacementTarget = box;
-        _suggestPopup.IsOpen = true;
+
+        var topLeft = box.InputTextBox.PointToScreen(new System.Windows.Point(0, box.InputTextBox.ActualHeight + 4));
+        var source = PresentationSource.FromVisual(this);
+        var scale = source?.CompositionTarget?.TransformToDevice.M11 ?? 1.0;
+        _suggestPopup.Left = topLeft.X / scale;
+        _suggestPopup.Top = topLeft.Y / scale;
+        _suggestPopup.Show();
     }
 
     private void HideSuggestions()
     {
-        if (_suggestPopup is not null)
-            _suggestPopup.IsOpen = false;
+        if (_suggestTarget is { } target)
+            target.SuppressAutoCommit = false;
+        _suggestPopup?.Hide();
     }
 
     private void CommitSuggestion()
     {
-        if (_suggestTarget is not { } box || _suggestList?.SelectedItem is not string chosen)
+        if (_suggestTarget is not { } box || _suggestList?.SelectedItem is not EmailClient.Mail.ContactEntry chosen)
             return;
 
-        var upToCaret = box.Text[..Math.Min(box.CaretIndex, box.Text.Length)];
-        var lastComma = upToCaret.LastIndexOf(',');
-        var prefix = lastComma < 0 ? "" : box.Text[..(lastComma + 1)] + " ";
-        var suffix = box.Text[Math.Min(box.CaretIndex, box.Text.Length)..];
-
-        box.Text = $"{prefix}{chosen}, {suffix.TrimStart()}".TrimEnd();
-        box.CaretIndex = (prefix + chosen + ", ").Length;
+        box.AddRecipient(chosen.DisplayName, chosen.Address);
         HideSuggestions();
-        box.Focus();
+        box.InputTextBox.Focus();
     }
 
     private void RecipientBox_PreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
     {
-        if (_suggestPopup is not { IsOpen: true } || _suggestList is null)
+        if (_suggestPopup is not { IsVisible: true } || _suggestList is null)
             return;
 
         switch (e.Key)
@@ -1840,6 +2060,17 @@ public partial class ComposeWindow : Window
             return;
         }
 
+        // A hard rule, not a nudge like the attachment reminder below — there's no "send anyway".
+        // A subject-less message is easy to lose in a search or a busy inbox later, for the sender
+        // as much as the recipient, so this isn't optional the way the attachment check is.
+        if (string.IsNullOrWhiteSpace(SubjectBox.Text))
+        {
+            System.Windows.MessageBox.Show(this, "Add a subject before sending.", "Missing subject",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            SubjectBox.Focus();
+            return;
+        }
+
         var bodyText = _plainTextMode ? PlainEditor.Text : _bodyText;
         if (!_attachmentReminderDismissed && _attachments.Count == 0 && MentionsAttachment.IsMatch(bodyText))
         {
@@ -1858,19 +2089,52 @@ public partial class ComposeWindow : Window
         Close();
     }
 
+    /// <summary>
+    /// Saves right now and stays open — unlike the old behaviour, which set <see cref="Draft"/>
+    /// and closed the window with no feedback at all, silently relying on the caller to notice a
+    /// status-bar message in a different (possibly hidden-behind-this-one) window.
+    /// </summary>
     private async void SaveDraftButton_Click(object sender, RoutedEventArgs e)
     {
         await FlushEditorAsync();
-        Draft = BuildResult();
-        _discarding = true; // Draft is already set; don't let Closed overwrite it with a stale copy.
-        Close();
+        var result = BuildResult();
+        if (!result.HasContent)
+            return; // Nothing typed yet — saving an empty draft isn't worth a round trip or a toast.
+
+        var saved = SaveDraftNow is not null && await SaveDraftNow(result);
+        ShowSavedFeedback(saved);
+    }
+
+    private System.Windows.Threading.DispatcherTimer? _feedbackHideTimer;
+
+    private void ShowSavedFeedback(bool success)
+    {
+        SavedFeedbackText.Text = success ? "Saved" : "Couldn't save — try again";
+        SavedFeedback.Background = (System.Windows.Media.Brush)FindResource(success ? "SuccessSoft" : "DangerSoft");
+        SavedFeedbackText.Foreground = (System.Windows.Media.Brush)FindResource(success ? "SuccessDeep" : "DangerDeep");
+
+        // Cancels any in-flight fade-out from a rapid repeat click, so a second Save while the
+        // first "Saved" pill is still fading re-shows at full opacity instead of the two fights
+        // producing a stuck half-faded state.
+        SavedFeedback.BeginAnimation(OpacityProperty, null);
+        SavedFeedback.Opacity = 1;
+
+        _feedbackHideTimer?.Stop();
+        _feedbackHideTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1400) };
+        _feedbackHideTimer.Tick += (_, _) =>
+        {
+            _feedbackHideTimer!.Stop();
+            SavedFeedback.BeginAnimation(OpacityProperty,
+                new System.Windows.Media.Animation.DoubleAnimation(0, TimeSpan.FromMilliseconds(400)));
+        };
+        _feedbackHideTimer.Start();
     }
 
     private void DiscardButton_Click(object sender, RoutedEventArgs e)
     {
         if (BuildResult().HasContent
-            && System.Windows.MessageBox.Show(this, "Discard this message? It won't be saved to Drafts.",
-                "Discard message", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+            && UI.ConfirmDialog.Show(this, "Discard message", "Discard this message? It won't be saved to Drafts.",
+                warningIcon: true, new UI.ConfirmChoice("Cancel"), new UI.ConfirmChoice("Discard", Destructive: true)) != "Discard")
             return;
 
         // Discard means discard — the Closed handler must not quietly turn it into a draft.
@@ -1885,8 +2149,34 @@ public partial class ComposeWindow : Window
     private void MaximizeButton_Click(object sender, RoutedEventArgs e) =>
         WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
 
+    /// <summary>Set once the close-confirmation prompt has already been answered (Save/Discard),
+    /// so the second, re-entrant call to Close() it makes doesn't just show the same prompt again.</summary>
+    private bool _closeConfirmed;
+
     protected override void OnClosing(CancelEventArgs e)
     {
+        // Every close path — the window's own X, Alt+F4, the toolbar's Cancel button — funnels
+        // through this one override, which is what lets a single check here cover all of them.
+        // Result is null means "not sending"; _discarding means Discard or this same prompt's own
+        // Save/Discard choice already decided the outcome — either way there's nothing left to ask.
+        if (!_closeConfirmed && Result is null && !_discarding && BuildResult().HasContent)
+        {
+            e.Cancel = true;
+            // Deferred via BeginInvoke, not called directly: ConfirmCloseAsync's first line calls
+            // ConfirmDialog.Show, which is synchronous (blocks on ShowDialog) — with no await
+            // before it, that entire modal interaction would otherwise run synchronously inside
+            // *this* call stack, before OnClosing ever returns. WPF still considers the window
+            // "closing" for the duration of that stack regardless of e.Cancel, so the Close() call
+            // ConfirmCloseAsync makes afterward (Save/Discard) threw "Cannot ... Close() ... while
+            // a Window is closing" — uncaught, since nothing awaited this fire-and-forget Task, so
+            // it silently surfaced minutes later as an unobserved-task-exception log entry with no
+            // visible symptom at all beyond "Discard doesn't close the window". Posting this to run
+            // on a later dispatcher cycle lets WPF fully finish processing the cancelled Closing
+            // event first, so the later Close() call lands on a window that's genuinely not mid-close.
+            Dispatcher.BeginInvoke(new Action(() => _ = ConfirmCloseAsync()));
+            return;
+        }
+
         base.OnClosing(e);
         // Detach ownership before the native window actually closes — WPF has a long-standing quirk
         // (WindowStyle="None" + WindowChrome + Owner set) where closing an owned window can send the
@@ -1895,6 +2185,10 @@ public partial class ComposeWindow : Window
         Owner = null;
         _autosaveTimer.Stop();
         _autosaveTimer.Tick -= AutosaveTimer_Tick;
+        // Not owned by this window (see its own construction comment for why), so it wouldn't
+        // otherwise close with this one — left open, Hide()s an orphaned top-level window for the
+        // rest of the process's life instead of actually closing it.
+        _suggestPopup?.Close();
         if (_editorReady)
         {
             // _editorReady means the WebView2/CoreWebView2 was actually initialized — whether the
@@ -1905,6 +2199,45 @@ public partial class ComposeWindow : Window
             // Closing can't await, so this leans on the debounced push from the editor. A blur
             // fires one immediately, which covers the ordinary click-the-X case.
             RichEditor.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// The 3-way "Save this message?" prompt — replaces what used to be a silent implicit
+    /// autosave-as-draft on any close that wasn't an explicit Discard. OnClosing can't itself
+    /// await this, so it cancels the close, runs this, and re-invokes Close() once a choice
+    /// (other than staying open) has been made.
+    /// </summary>
+    private async Task ConfirmCloseAsync()
+    {
+        var choice = UI.ConfirmDialog.Show(this, "Do you want to save changes?",
+            "Do you want to save changes to this draft?",
+            warningIcon: false,
+            new UI.ConfirmChoice("Don't Save", Destructive: true),
+            new UI.ConfirmChoice("Save Draft"));
+
+        switch (choice)
+        {
+            case "Save Draft":
+                await FlushEditorAsync();
+                var result = BuildResult();
+                if (SaveDraftNow is not null)
+                    await SaveDraftNow(result);
+                // Already saved for real above — the Closed handler's own fallback save must not
+                // also stash a (by now stale) copy into Draft on top of that.
+                _discarding = true;
+                _closeConfirmed = true;
+                Close();
+                break;
+
+            case "Don't Save":
+                _discarding = true;
+                _closeConfirmed = true;
+                Close();
+                break;
+
+            // Cancel, or dismissed via Escape/the dialog's own close affordance — stay open, do
+            // nothing further.
         }
     }
 }

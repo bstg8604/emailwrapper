@@ -1,4 +1,4 @@
-using System.Text.Json.Serialization;
+﻿using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 
 namespace EmailClient.Automation;
@@ -30,6 +30,28 @@ public sealed record InboxRow(
             return firstLetter == default ? "?" : char.ToUpperInvariant(firstLetter).ToString();
         }
     }
+
+    /// <summary>
+    /// What a screen reader should call this row. The visible row is a stack of separate
+    /// TextBlocks, which UI Automation would otherwise read out as four unrelated fragments with
+    /// no indication of which message they belong to or whether it's been read.
+    /// </summary>
+    public string AccessibleName
+    {
+        get
+        {
+            var state = Unread ? "Unread" : "Read";
+            var extras = (Starred ? ", starred" : "") + (HasAttachment ? ", has attachment" : "");
+            return $"{state} message from {Sender}. {Subject}. {Date}{extras}";
+        }
+    }
+
+    /// <summary>Per-row star button label — "Star" alone gives no clue which row it acts on.</summary>
+    public string StarAccessibleName =>
+        (Starred ? "Unstar message from " : "Star message from ") + Sender;
+
+    /// <summary>Per-row bulk-select checkbox label, same reasoning as <see cref="StarAccessibleName"/>.</summary>
+    public string SelectAccessibleName => $"Select message from {Sender}, {Subject}";
 
     // Set once by MainWindow when an account is signed into (or mock data selected) — the row
     // itself has no idea what "your own domain" is, so it can't compute this on its own.

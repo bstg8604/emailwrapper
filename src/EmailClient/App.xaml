@@ -2,11 +2,15 @@
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:local="clr-namespace:EmailClient"
-             StartupUri="MainWindow.xaml"
              ShutdownMode="OnExplicitShutdown">
     <Application.Resources>
         <ResourceDictionary>
             <ResourceDictionary.MergedDictionaries>
+                <!-- Every colour the app draws with is named here; Theme.xaml's control styles
+                     resolve theirs out of it. Kept as a separate dictionary, and referenced with
+                     DynamicResource throughout, so a second palette can be dropped in later
+                     without touching a single call site. -->
+                <ResourceDictionary Source="Themes/Palette.Light.xaml"/>
                 <ResourceDictionary Source="Theme.xaml"/>
             </ResourceDictionary.MergedDictionaries>
         </ResourceDictionary>

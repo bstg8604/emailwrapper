@@ -1,0 +1,38 @@
+<UserControl x:Class="EmailClient.UI.RecipientBox"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Focusable="False">
+    <!--
+    A Gmail/Outlook-style recipient chip field, replacing what used to be a plain TextBox holding
+    raw "Name <address@x.com>, Name2 <address2@x.com>" text — correct as the wire format, but not
+    something a person should have to read while composing. Each committed recipient becomes a
+    rounded pill showing just their name (the address moves to a tooltip); the one thing still
+    being typed lives in a plain inline TextBox at the end, which is also what the recipient
+    autocomplete popup anchors to.
+
+    Deliberately built as raw children of an ItemsControl-hosted WrapPanel rather than binding an
+    ItemsSource + DataTemplate — the "N chips, then one live TextBox, all wrapping together"
+    element is a mixed collection an ItemsSource can't express cleanly, and directly managing
+    children in code-behind is the same pattern this app's other dynamic popups (the colour
+    picker, the contacts picker) already use.
+    -->
+    <!-- Cursor="IBeam" here, not just on the input TextBox — the Border spans the field's whole
+         hit-test area, and WPF only shows the text caret cursor automatically over an actual
+         TextBox's own content region, same reasoning as the plain fields' own I-beam fix. Without
+         it, everywhere except directly over the small live-typing TextBox showed a plain arrow.
+         VerticalAlignment="Center": a WrapPanel lays its content out from the top and never
+         centers it within extra space on its own, so once this control stretches to fill the
+         field row's full MinHeight, the chips/caret would otherwise sit flush at the top of that
+         row instead of centered in it. -->
+    <Border x:Name="Root" Background="Transparent" MinHeight="24" Cursor="IBeam"
+            VerticalAlignment="Center"
+            MouseLeftButtonDown="Root_MouseLeftButtonDown">
+        <ItemsControl x:Name="Chips" Focusable="False">
+            <ItemsControl.ItemsPanel>
+                <ItemsPanelTemplate>
+                    <WrapPanel Orientation="Horizontal"/>
+                </ItemsPanelTemplate>
+            </ItemsControl.ItemsPanel>
+        </ItemsControl>
+    </Border>
+</UserControl>

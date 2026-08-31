@@ -1,0 +1,121 @@
+<Window x:Class="EmailClient.UI.ConfirmDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
+        Title="Purplemail" WindowStyle="None" ResizeMode="NoResize"
+        SizeToContent="Height" Width="380"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
+        Background="{DynamicResource SurfaceCard}" FontFamily="Segoe UI"
+        KeyDown="Window_KeyDown" MouseLeftButtonDown="Window_MouseLeftButtonDown">
+
+    <!-- A real owned modal Window rather than a MessageBox — the whole point is for delete/discard
+         confirmations to look like the rest of this app (rounded, palette-themed, its own icon
+         language) instead of the plain OS dialog chrome MessageBox.Show always draws, regardless
+         of the app's own theme. Modal (ShowDialog), so the owner-minimize-on-deactivate quirk that
+         affects the app's other owned, non-modal floating windows doesn't apply here — modal
+         blocks the owner from losing activation to anything else while this is open. -->
+    <shell:WindowChrome.WindowChrome>
+        <shell:WindowChrome CaptionHeight="0" ResizeBorderThickness="0" GlassFrameThickness="0" CornerRadius="10"/>
+    </shell:WindowChrome.WindowChrome>
+
+    <Window.Resources>
+        <Style x:Key="DialogOutlineButton" TargetType="Button">
+            <Setter Property="Padding" Value="14,8"/>
+            <Setter Property="FontSize" Value="12.5"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextSecondary}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderStrong}"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="7" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource SurfaceHover}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Filled, colour set per-instance in code-behind (Accent for a plain confirm, Danger for
+             a destructive one) — the same button slot serves both, since which one is "primary"
+             for a given dialog is a per-call decision, not something a single static style can know. -->
+        <Style x:Key="DialogFilledButton" TargetType="Button">
+            <Setter Property="Padding" Value="14,8"/>
+            <Setter Property="FontSize" Value="12.5"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextOnAccent}"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="7" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Opacity" Value="0.9"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <Border BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="10">
+        <Border.Effect>
+            <DropShadowEffect Color="{DynamicResource TextPrimaryColor}" Opacity="0.2" BlurRadius="24" ShadowDepth="4"/>
+        </Border.Effect>
+        <StackPanel Margin="24,22,24,18">
+            <Grid Margin="0,0,0,12">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <Border x:Name="IconBadge" Width="38" Height="38" CornerRadius="19" VerticalAlignment="Top">
+                    <TextBlock x:Name="IconGlyph" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="17"
+                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                </Border>
+                <TextBlock x:Name="TitleText" Grid.Column="1" FontSize="15" FontWeight="SemiBold"
+                           Foreground="{DynamicResource TextPrimary}" VerticalAlignment="Center"
+                           Margin="12,0,0,0" TextWrapping="Wrap"/>
+                <!-- Always acts as Cancel/dismiss (same result as Escape) — see CloseButton_Click. -->
+                <Button x:Name="CloseButton" Grid.Column="2" Width="26" Height="26" Padding="0"
+                        Background="Transparent" BorderThickness="0" Cursor="Hand"
+                        VerticalAlignment="Top" Click="CloseButton_Click">
+                    <Button.Template>
+                        <ControlTemplate TargetType="Button">
+                            <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="13">
+                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter TargetName="Bd" Property="Background" Value="{DynamicResource SurfaceHover}"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Button.Template>
+                    <TextBlock x:Name="CloseGlyph" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="11"
+                               Foreground="{DynamicResource TextMuted}"/>
+                </Button>
+            </Grid>
+            <TextBlock x:Name="MessageText" FontSize="12.5" Foreground="{DynamicResource TextSecondary}"
+                       TextWrapping="Wrap" LineHeight="18" Margin="0,0,0,22"/>
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button x:Name="Button1" Style="{StaticResource DialogOutlineButton}" Margin="0,0,8,0" Click="Choice_Click"/>
+                <Button x:Name="Button2" Style="{StaticResource DialogOutlineButton}" Margin="0,0,8,0" Click="Choice_Click" Visibility="Collapsed"/>
+                <Button x:Name="Button3" Style="{StaticResource DialogFilledButton}" Click="Choice_Click"/>
+            </StackPanel>
+        </StackPanel>
+    </Border>
+</Window>

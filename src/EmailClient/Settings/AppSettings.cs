@@ -1,6 +1,8 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
+using System.Text.Json.Serialization;
+using EmailClient.Diagnostics;
 
 namespace EmailClient.Settings;
 
@@ -60,6 +62,26 @@ public sealed class AppSettings
     /// </summary>
     public int UndoSendSeconds { get; set; } = 5;
 
+    /// <summary>
+    /// Whether new mail raises a desktop notification. On by default — the point of leaving the
+    /// app in the tray is to be told when something arrives. No settings UI exposes this yet; edit
+    /// settings.json directly, same as <see cref="UndoSendSeconds"/>.
+    /// </summary>
+    public bool NotificationsEnabled { get; set; } = true;
+
+    /// <summary>
+    /// Whether the window close button sends the app to the tray instead of quitting. On by
+    /// default; set false to make X actually exit for anyone who'd rather not have a resident app.
+    /// Exit from the tray menu always quits regardless.
+    /// </summary>
+    public bool CloseToTray { get; set; } = true;
+
+    /// <summary>
+    /// Set once the app has explained where it went the first time it hid itself, so the "still
+    /// running in the tray" notification never becomes a recurring annoyance.
+    /// </summary>
+    public bool TrayHintShown { get; set; }
+
     private static string DataDir =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IITBWebmailWrapper");
 
@@ -85,15 +107,20 @@ public sealed class AppSettings
                 }
             }
         }
-        catch
+        catch (Exception ex)
         {
             // Corrupt or unreadable settings file — fall back to defaults.
+            Log.Warn("Couldn't read settings.json — falling back to defaults", ex);
         }
 
         return new AppSettings();
     }
 
-    /// <summary>Clamped 1-60s — a hand-edited settings.json shouldn't be able to break the undo affordance.</summary>
+    /// <summary>Clamped 1-60s — a hand-edited settings.json shouldn't be able to break the undo
+    /// affordance. JsonIgnore because it's derived from <see cref="UndoSendSeconds"/>: without it
+    /// System.Text.Json writes it into settings.json as a phantom key that nothing ever reads back
+    /// (it has no setter), which just invites someone to edit the one that does nothing.</summary>
+    [JsonIgnore]
     public int ClampedUndoSendSeconds => Math.Clamp(UndoSendSeconds, 1, 60);
 
     public void Save()

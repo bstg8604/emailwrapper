@@ -1,0 +1,58 @@
+<Window x:Class="EmailClient.UI.ScreenshotOverlayWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Screenshot" WindowStyle="None" ResizeMode="NoResize"
+        ShowInTaskbar="False" Topmost="True" Cursor="Cross"
+        WindowStartupLocation="Manual" Left="0" Top="0"
+        KeyDown="Window_KeyDown" Deactivated="Window_Deactivated">
+
+    <!-- Sized/positioned in code-behind via ScreenshotTool.PlaceWindowAtPhysicalBounds, not the
+         Left/Top/Width/Height above — those exist only so the window has *some* valid state
+         before SourceInitialized runs. See that method's own comment for why. -->
+
+    <Grid>
+        <!-- The screen, captured a moment ago and shown as a plain static image. This is what
+             lets the overlay dim/highlight without a live, flickering view of whatever's actually
+             behind it, and means the tool never captures a screenshot of its own dimming layer. -->
+        <Image x:Name="ScreenImage" Stretch="Fill"/>
+
+        <!-- Dims everything except the current selection. An Exclude-mode CombinedGeometry (the
+             full window rect minus the selection rect) rather than two separate dimmed panels,
+             because the selection can be dragged in any direction from the start point — tracking
+             "the other four panels around a moving hole" by hand is exactly the bug class this
+             single geometry sidesteps. -->
+        <Path x:Name="DimLayer" Fill="#8A000000" IsHitTestVisible="False">
+            <Path.Data>
+                <CombinedGeometry x:Name="DimGeometry" GeometryCombineMode="Exclude">
+                    <CombinedGeometry.Geometry1>
+                        <RectangleGeometry x:Name="FullRectGeometry"/>
+                    </CombinedGeometry.Geometry1>
+                    <CombinedGeometry.Geometry2>
+                        <RectangleGeometry x:Name="HoleGeometry"/>
+                    </CombinedGeometry.Geometry2>
+                </CombinedGeometry>
+            </Path.Data>
+        </Path>
+
+        <!-- Crisp edge around the live selection — the dim layer's own boundary reads as soft
+             against the screenshot underneath it, this is what makes the rectangle unambiguous. -->
+        <Rectangle x:Name="SelectionBorder" Stroke="#FF8B5CF6" StrokeThickness="1.5"
+                   IsHitTestVisible="False" Visibility="Collapsed"/>
+
+        <!-- Selection size, following the cursor — the same convenience Snipping Tool and Brave's
+             own picker both offer, and without it there's no way to line up an exact size. -->
+        <Border x:Name="SizeLabel" Background="#E6222222" CornerRadius="4" Padding="7,3"
+                IsHitTestVisible="False" Visibility="Collapsed">
+            <TextBlock x:Name="SizeLabelText" Foreground="White" FontSize="12" FontFamily="Segoe UI"/>
+        </Border>
+
+        <!-- Shown until the first drag starts, so the gesture is discoverable rather than the
+             screen just going dark with no explanation. -->
+        <Border x:Name="HintBar" Background="#CC222222" CornerRadius="8" Padding="16,10"
+                HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,28,0,0"
+                IsHitTestVisible="False">
+            <TextBlock Text="Drag to select an area to copy  ·  Esc to cancel"
+                       Foreground="White" FontSize="13" FontFamily="Segoe UI"/>
+        </Border>
+    </Grid>
+</Window>

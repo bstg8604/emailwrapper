@@ -1,4 +1,4 @@
-<Window x:Class="EmailClient.UI.QuickLookWindow"
+﻿<Window x:Class="EmailClient.UI.QuickLookWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Quick Look" WindowStyle="None" AllowsTransparency="True" Background="Transparent"
@@ -11,7 +11,7 @@
             <Setter Property="Padding" Value="10,5"/>
             <Setter Property="Margin" Value="6,0,0,0"/>
             <Setter Property="Background" Value="Transparent"/>
-            <Setter Property="Foreground" Value="#FF6D28D9"/>
+            <Setter Property="Foreground" Value="{DynamicResource Accent}"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="FontSize" Value="12"/>
@@ -24,7 +24,7 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#FFF1EDFA"/>
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource AccentSoft}"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -35,7 +35,7 @@
             <Setter Property="Width" Value="36"/>
             <Setter Property="Height" Value="36"/>
             <Setter Property="Background" Value="Transparent"/>
-            <Setter Property="Foreground" Value="#FF666666"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextSecondary}"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="FontFamily" Value="Segoe Fluent Icons, Segoe MDL2 Assets"/>
@@ -48,8 +48,8 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#FFE81123"/>
-                                <Setter Property="Foreground" Value="White"/>
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Danger}"/>
+                                <Setter Property="Foreground" Value="{DynamicResource TextOnAccent}"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -66,11 +66,15 @@
          (Effect + ClipToBounds/CornerRadius on one Border hard-clips the shadow into a visible
          ring), and a CornerRadius alone doesn't clip WPF children without ClipToBounds too, which
          is why square content used to bleed past the "rounded" outline into the transparent window. -->
-    <Border MinWidth="280">
+    <!-- The margin is what makes the shadow visible at all. A DropShadowEffect doesn't take part
+         in layout, so under SizeToContent the window sizes to the panel alone and the 30px blur is
+         clipped flush against the window edge — the effect was declared but had nowhere to draw.
+         The margin reserves that space; it must stay >= BlurRadius/2 + ShadowDepth (15 + 6). -->
+    <Border MinWidth="280" Margin="24,20,24,28">
         <Border.Effect>
-            <DropShadowEffect Color="#FF000000" Opacity="0.28" BlurRadius="30" ShadowDepth="6"/>
+            <DropShadowEffect Color="{DynamicResource TextPrimaryColor}" Opacity="0.28" BlurRadius="30" ShadowDepth="6"/>
         </Border.Effect>
-        <Border Background="White" CornerRadius="12" ClipToBounds="True">
+        <Border Background="{DynamicResource SurfaceCard}" CornerRadius="12" ClipToBounds="True">
         <StackPanel>
             <Grid x:Name="TitleBar" Height="38" Background="Transparent"
                   MouseLeftButtonDown="TitleBar_MouseLeftButtonDown">
@@ -79,13 +83,13 @@
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
                 <TextBlock x:Name="FileNameText" Grid.Column="0" Margin="16,0,8,0" VerticalAlignment="Center"
-                           FontSize="12.5" FontWeight="SemiBold" Foreground="#FF444444"
+                           FontSize="12.5" FontWeight="SemiBold" Foreground="{DynamicResource TextBody}"
                            TextTrimming="CharacterEllipsis"/>
                 <Button Grid.Column="1" Content="&#xE8BB;" Style="{StaticResource CloseGlyphButton}"
                         AutomationProperties.Name="Close" Click="CloseButton_Click"/>
             </Grid>
 
-            <Border x:Name="ImageArea" Background="#FFF7F6FA" ClipToBounds="True">
+            <Border x:Name="ImageArea" Background="{DynamicResource SurfaceApp}" ClipToBounds="True">
                 <!-- MaxWidth/MaxHeight set in code-behind (a screen-size fraction) — that's what
                      caps how far the *window* grows as you zoom; the image inside can still grow
                      past it, and this ScrollViewer is what lets you pan around that overflow
@@ -103,7 +107,7 @@
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
                 <TextBlock x:Name="FileSizeText" Grid.Column="0" Margin="16,0,0,0" VerticalAlignment="Center"
-                           FontSize="11.5" Foreground="#FF9A9A9A"/>
+                           FontSize="11.5" Foreground="{DynamicResource TextMuted}"/>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="0,0,10,0">
                     <Button Content="Save a copy" Style="{StaticResource BarButton}"
                             AutomationProperties.Name="Save a copy" Click="SaveButton_Click"/>

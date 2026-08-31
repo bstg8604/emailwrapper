@@ -144,6 +144,39 @@ public static class Motion
         };
     }
 
+    /// <summary>
+    /// Same idea as <see cref="KeepOnScreen"/> but for a <see cref="System.Windows.Controls.ContextMenu"/>
+    /// clamped against its owning app window rather than the physical monitor.
+    ///
+    /// The account menu anchors from a button near the toolbar's right edge. On a wide window that
+    /// edge sits nowhere near the actual screen edge, so KeepOnScreen's monitor-relative check never
+    /// fires and the default Bottom placement (menu's left edge under the anchor, growing rightward)
+    /// spills the menu past the window into whatever is behind it — which is what "the options come
+    /// outside the app window" was actually describing. Shrinking the window makes it worse only
+    /// because the anchor ends up proportionally closer to the window's own right edge, not because
+    /// anything about the menu changes.
+    /// </summary>
+    public static void KeepInsideWindow(this System.Windows.Controls.ContextMenu menu)
+    {
+        menu.Placement = PlacementMode.Bottom;
+        menu.Opened += (_, _) =>
+        {
+            if (menu.PlacementTarget is not FrameworkElement anchor)
+                return;
+            var window = System.Windows.Window.GetWindow(anchor);
+            if (window is null)
+                return;
+
+            var menuWidth = menu.ActualWidth > 0 ? menu.ActualWidth : menu.DesiredSize.Width;
+            var anchorTopLeft = anchor.PointToScreen(new System.Windows.Point(0, 0));
+            var windowRight = window.PointToScreen(new System.Windows.Point(window.ActualWidth, 0)).X;
+
+            menu.HorizontalOffset = anchorTopLeft.X + menuWidth > windowRight
+                ? anchor.ActualWidth - menuWidth   // right-align: menu's right edge meets the anchor's
+                : 0;                                // default: menu's left edge meets the anchor's
+        };
+    }
+
     /// <summary>A quick scale "pop" - the star-toggle delight moment, Twitter/Gmail-style.</summary>
     public static void Pulse(this UIElement element, double ms = 220)
     {

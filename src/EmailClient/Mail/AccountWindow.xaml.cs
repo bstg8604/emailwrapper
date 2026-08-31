@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -12,7 +12,7 @@ using EmailClient.UI;
 
 namespace EmailClient.Mail;
 
-public enum AccountPage { Profile, Signature, Contacts, Folders, Settings, Help }
+public enum AccountPage { Profile, Signature, Contacts, Folders, Settings, Help, About }
 
 /// <summary>
 /// The account page: sign-in/profile, signature editing, contacts, folder management, and
@@ -144,6 +144,7 @@ public partial class AccountWindow : Window
             case AccountPage.Folders: _ = ShowFoldersPageAsync(); break;
             case AccountPage.Settings: ShowSettingsPage(); break;
             case AccountPage.Help: ShowHelpPage(); break;
+            case AccountPage.About: ShowAboutPage(); break;
             default: ShowProfilePage(); break;
         }
     }
@@ -152,7 +153,7 @@ public partial class AccountWindow : Window
 
     private void SetVisiblePage(FrameworkElement page)
     {
-        foreach (var p in new FrameworkElement[] { ProfilePage, SignaturePage, ContactsPage, FoldersPage, SettingsPage, HelpPage })
+        foreach (var p in new FrameworkElement[] { ProfilePage, SignaturePage, ContactsPage, FoldersPage, SettingsPage, HelpPage, AboutPage })
             p.Visibility = p == page ? Visibility.Visible : Visibility.Collapsed;
     }
 
@@ -162,10 +163,10 @@ public partial class AccountWindow : Window
     /// same fix MainWindow's folder sidebar needed for the same reason.</summary>
     private void SetActiveNav(Border active)
     {
-        foreach (var row in new[] { NavProfile, NavSignature, NavContacts, NavFolders, NavSettings, NavHelp })
+        foreach (var row in new[] { NavProfile, NavSignature, NavContacts, NavFolders, NavSettings, NavHelp, NavAbout })
         {
             if (row == active)
-                row.Background = new SolidColorBrush(Color.FromRgb(0xE7, 0xD9, 0xF7));
+                row.Background = (System.Windows.Media.Brush)FindResource("NavActive");
             else
                 row.ClearValue(Border.BackgroundProperty);
         }
@@ -212,12 +213,71 @@ public partial class AccountWindow : Window
         SetActiveNav(NavHelp);
     }
 
+    private void ShowAboutPage()
+    {
+        SetVisiblePage(AboutPage);
+        SetActiveNav(NavAbout);
+        PopulateAbout();
+    }
+
+    /// <summary>
+    /// Fills the About page from the assembly rather than from constants, so the version can never
+    /// drift from the one that was actually built — the whole point of showing it is that a bug
+    /// report can name the exact build.
+    /// </summary>
+    private void PopulateAbout()
+    {
+        var assembly = typeof(AccountWindow).Assembly;
+        var informational = assembly
+            .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+            .OfType<System.Reflection.AssemblyInformationalVersionAttribute>()
+            .FirstOrDefault()?.InformationalVersion;
+
+        // The informational version carries a "+<commit sha>" suffix when built from a repo; the
+        // sha is noise on an About page, so it's trimmed but the version itself is preferred over
+        // the four-part assembly version.
+        var version = informational?.Split('+')[0]
+                      ?? assembly.GetName().Version?.ToString(3)
+                      ?? "1.0.0";
+
+        AboutVersionText.Text = $"Version {version}";
+        AboutRuntimeText.Text =
+            $".NET {Environment.Version}  ·  Windows {Environment.OSVersion.Version}  ·  {(Environment.Is64BitProcess ? "64-bit" : "32-bit")}";
+        AboutDataPathText.Text = $"Your mail settings and logs are stored in {Diagnostics.Log.Directory}";
+
+        var copyright = assembly
+            .GetCustomAttributes(typeof(System.Reflection.AssemblyCopyrightAttribute), false)
+            .OfType<System.Reflection.AssemblyCopyrightAttribute>()
+            .FirstOrDefault()?.Copyright;
+        AboutCopyrightText.Text = copyright ?? "";
+    }
+
+    /// <summary>
+    /// Opens a link in the user's browser. WPF's Hyperlink raises this instead of navigating,
+    /// because a NavigateUri inside a plain window has nowhere to navigate to; UseShellExecute is
+    /// what hands it to the default browser rather than trying to run it as a process.
+    /// </summary>
+    private void Hyperlink_RequestNavigate(object sender, System.Windows.Navigation.RequestNavigateEventArgs e)
+    {
+        try
+        {
+            System.Diagnostics.Process.Start(
+                new System.Diagnostics.ProcessStartInfo(e.Uri.AbsoluteUri) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            Diagnostics.Log.Warn($"Couldn't open the link {e.Uri}", ex);
+        }
+        e.Handled = true;
+    }
+
     private void NavProfile_Click(object sender, MouseButtonEventArgs e) => ShowProfilePage();
     private async void NavSignature_Click(object sender, MouseButtonEventArgs e) => await ShowSignaturePageAsync();
     private void NavContacts_Click(object sender, MouseButtonEventArgs e) => ShowContactsPage();
     private async void NavFolders_Click(object sender, MouseButtonEventArgs e) => await ShowFoldersPageAsync();
     private void NavSettings_Click(object sender, MouseButtonEventArgs e) => ShowSettingsPage();
     private void NavHelp_Click(object sender, MouseButtonEventArgs e) => ShowHelpPage();
+    private void NavAbout_Click(object sender, MouseButtonEventArgs e) => ShowAboutPage();
 
     // ---- Profile summary (already signed in) -----------------------------------------------------
 
@@ -915,9 +975,9 @@ public partial class AccountWindow : Window
         if (sender is not System.Windows.Controls.Button { Tag: string email })
             return;
 
-        var confirm = System.Windows.MessageBox.Show(this, $"Remove {email} from your contacts?",
-            "Remove contact", MessageBoxButton.YesNo, MessageBoxImage.Warning);
-        if (confirm != MessageBoxResult.Yes)
+        var choice = EmailClient.UI.ConfirmDialog.Show(this, "Remove contact", $"Remove {email} from your contacts?",
+            warningIcon: true, new EmailClient.UI.ConfirmChoice("Cancel"), new EmailClient.UI.ConfirmChoice("Remove", Destructive: true));
+        if (choice != "Remove")
             return;
 
         _manualContacts.RemoveAll(c => c.Email.Equals(email, StringComparison.OrdinalIgnoreCase));
@@ -959,13 +1019,18 @@ public partial class AccountWindow : Window
 
         var special = await _mail.GetSpecialMailboxesAsync();
         var protectedMailboxes = new HashSet<string>(special.Values, StringComparer.OrdinalIgnoreCase);
+        // IMAP's root mailbox is canonically named "INBOX" (RFC 3501) — every other special folder's
+        // name (Sent, Drafts, ...) is just whatever the server happens to call it, already readable,
+        // but INBOX's all-caps spelling would otherwise be the one folder in this list that doesn't
+        // look like the rest.
+        var inboxMailbox = special.GetValueOrDefault("Inbox");
 
         _currentFolders = (await _mail.ListFoldersAsync()).ToList();
         FoldersList.ItemsSource = _currentFolders
             .OrderBy(f => f.Mailbox, StringComparer.OrdinalIgnoreCase)
             .Select(f => new FolderRowView(
                 f.Mailbox,
-                f.Name,
+                f.Mailbox.Equals(inboxMailbox, StringComparison.OrdinalIgnoreCase) ? "Inbox" : f.Name,
                 new Thickness(f.Depth * 14, 0, 0, 0),
                 !protectedMailboxes.Contains(f.Mailbox)))
             .ToList();
@@ -1058,10 +1123,10 @@ public partial class AccountWindow : Window
             return;
 
         var folder = _currentFolders.FirstOrDefault(f => f.Mailbox == mailbox);
-        var confirm = System.Windows.MessageBox.Show(this,
+        var choice = EmailClient.UI.ConfirmDialog.Show(this, "Delete folder",
             $"Delete the folder \"{folder?.Name ?? mailbox}\" and everything in it? This can't be undone.",
-            "Delete folder", MessageBoxButton.YesNo, MessageBoxImage.Warning);
-        if (confirm != MessageBoxResult.Yes)
+            warningIcon: true, new EmailClient.UI.ConfirmChoice("Cancel"), new EmailClient.UI.ConfirmChoice("Delete", Destructive: true));
+        if (choice != "Delete")
             return;
 
         FoldersErrorText.Visibility = Visibility.Collapsed;
@@ -1085,6 +1150,15 @@ public partial class AccountWindow : Window
     private void RefreshSettingsUI()
     {
         UndoSendSecondsBox.Text = _settings.ClampedUndoSendSeconds.ToString();
+
+        NotificationsCheck.IsChecked = _settings.NotificationsEnabled;
+        CloseToTrayCheck.IsChecked = _settings.CloseToTray;
+        // Read from the registry every time this page opens: the entry can be turned off from Task
+        // Manager's Startup tab without the app being involved, so a remembered value would lie.
+        StartWithWindowsCheck.IsChecked = StartupRegistration.IsEnabled;
+        StartWithWindowsCheck.IsEnabled = StartupRegistration.IsAvailable;
+        if (!StartupRegistration.IsAvailable)
+            StartWithWindowsHint.Text = "Only available when running the installed app, not under `dotnet run`.";
 
         var accounts = AccountStore.Load().Accounts;
         AccountsList.ItemsSource = accounts.Select(a =>
@@ -1133,10 +1207,10 @@ public partial class AccountWindow : Window
         // One click, silently gone, with no way back short of re-entering the password and
         // server settings from scratch — worth the extra click to confirm, the same way Delete
         // Folder already does.
-        var confirm = System.Windows.MessageBox.Show(this,
+        var choice = EmailClient.UI.ConfirmDialog.Show(this, "Remove account",
             $"Remove {email} from this app? You'll need to sign in again to add it back.",
-            "Remove account", MessageBoxButton.YesNo, MessageBoxImage.Warning);
-        if (confirm != MessageBoxResult.Yes)
+            warningIcon: true, new EmailClient.UI.ConfirmChoice("Cancel"), new EmailClient.UI.ConfirmChoice("Remove", Destructive: true));
+        if (choice != "Remove")
             return;
 
         var account = AccountStore.Load().Accounts.FirstOrDefault(a => a.Email.Equals(email, StringComparison.OrdinalIgnoreCase));
@@ -1160,6 +1234,36 @@ public partial class AccountWindow : Window
     {
         if (e.Key == Key.Enter)
             SaveUndoSendSeconds();
+    }
+
+    private void OpenLogButton_Click(object sender, RoutedEventArgs e) => App.OpenLog();
+
+    private void NotificationsCheck_Click(object sender, RoutedEventArgs e)
+    {
+        _settings.NotificationsEnabled = NotificationsCheck.IsChecked == true;
+        _settings.Save();
+    }
+
+    private void CloseToTrayCheck_Click(object sender, RoutedEventArgs e)
+    {
+        _settings.CloseToTray = CloseToTrayCheck.IsChecked == true;
+        _settings.Save();
+    }
+
+    private const string StartWithWindowsHintText =
+        "Starts minimised to the tray, so new mail is announced from sign-in onwards.";
+
+    private void StartWithWindowsCheck_Click(object sender, RoutedEventArgs e)
+    {
+        // The registry is the source of truth, and writing it can fail (a policy-managed Run key),
+        // so the checkbox re-reads what the registry actually says rather than trusting the click.
+        var wanted = StartWithWindowsCheck.IsChecked == true;
+        var actual = StartupRegistration.Set(wanted);
+
+        StartWithWindowsCheck.IsChecked = actual;
+        StartWithWindowsHint.Text = actual == wanted
+            ? StartWithWindowsHintText
+            : "Windows wouldn't accept the change — startup entries can be blocked by policy or turned off under Task Manager's Startup apps.";
     }
 
 }

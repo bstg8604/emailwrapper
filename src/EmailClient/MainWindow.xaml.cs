@@ -25,6 +25,7 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<InboxRow> _messages = [];
     private readonly ICollectionView _messagesView;
     private readonly DispatcherTimer _pollTimer;
+    private readonly DispatcherTimer _scheduledSendTimer;
     private TrayIcon? _tray;
     private readonly NewMailNotifier _notifier = new();
 
@@ -33,6 +34,11 @@ public partial class MainWindow : Window
     /// still shows something when the server can't be reached. Null until an account connects.
     /// </summary>
     private MessageCache? _cache;
+
+    /// <summary>Queue for "Send Later" — null until an account connects, same lifecycle as
+    /// <see cref="_cache"/>. See MainWindow.ScheduledSend.cs.</summary>
+    private ScheduledSendStore? _scheduledSends;
+    private OfflineActionQueue? _offlineActions;
     private bool _isExiting;
     private string _currentFolder = "Inbox";
     private string _searchText = "";
@@ -42,6 +48,8 @@ public partial class MainWindow : Window
     private MessageDetail? _openDetail;
     private string? _blockedImagesHtml;
     private string? _meetingLinkUrl;
+    private string? _unsubscribeUrl;
+    private string? _unsubscribeMailto;
 
     // Keyed by message id — lets the appattach:// link handler (see ConfigureReadingPane) resolve
     // a clicked in-card attachment chip back to the real MailAttachment, without needing script
@@ -83,11 +91,21 @@ public partial class MainWindow : Window
         MessageList.ItemsSource = _messages;
         _messagesView = CollectionViewSource.GetDefaultView(_messages);
         _messagesView.Filter = FilterMessage;
+        // One subscription point rather than chasing every place _messages gets mutated — see
+        // UpdateThreadCounts in MainWindow.MessageList.cs.
+        _messages.CollectionChanged += (_, _) => UpdateThreadCounts();
 
         // Real push (IMAP IDLE) is a reasonable upgrade later; a periodic refresh is simpler and
         // catches new mail / other-client changes within a minute, which is enough for a first cut.
         _pollTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(60) };
         _pollTimer.Tick += async (_, _) => await RefreshMessagesAsync(announceNewMail: true);
+
+        // 30s is frequent enough that a message scheduled for, say, an exact minute doesn't visibly
+        // slip — the app has to actually be running at the scheduled time regardless (there's no
+        // server-side scheduling on plain IMAP/SMTP), so this is a best-effort local clock, not a
+        // guarantee the way a real mail server's own scheduled-send feature would be.
+        _scheduledSendTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
+        _scheduledSendTimer.Tick += async (_, _) => await SendDueScheduledMessagesAsync();
 
         // Long enough that normal typing never fires a search per keystroke, short enough that
         // pausing after a word feels responsive rather than "did anything happen".
@@ -100,6 +118,10 @@ public partial class MainWindow : Window
 
         ApplyStoredBounds();
         UpdateSelfDomain();
+        SyncVipSenders();
+        // Same fade-in every other window in the app already gets (ComposeWindow, AccountWindow) —
+        // without it, the main window was the one place that snapped straight to full opacity.
+        this.FadeInOnShow();
 
         Loaded += MainWindow_Loaded;
         Closing += MainWindow_Closing;
@@ -177,7 +199,7 @@ public partial class MainWindow : Window
     {
         Width = _settings.Width;
         Height = _settings.Height;
-        if (_settings.Left is { } left && _settings.Top is { } top)
+        if (_settings.Left is { } left && _settings.Top is { } top && IsOnAnyScreen(left, top))
         {
             WindowStartupLocation = WindowStartupLocation.Manual;
             Left = left;
@@ -185,6 +207,24 @@ public partial class MainWindow : Window
         }
         if (_settings.Maximized)
             WindowState = WindowState.Maximized;
+    }
+
+    /// <summary>
+    /// A saved position from a monitor that's since been disconnected (a laptop undocked since its
+    /// last close, say) would otherwise restore the window fully off-screen and unreachable without
+    /// manually editing settings.json — falling back to WPF's own default placement instead. Checked
+    /// against just the saved top-left point rather than the whole window rect, so a window that's
+    /// still mostly on-screen (just its bottom-right corner hanging off an edge) is left alone.
+    /// </summary>
+    private static bool IsOnAnyScreen(double left, double top)
+    {
+        var point = new System.Drawing.Point((int)left, (int)top);
+        foreach (var screen in System.Windows.Forms.Screen.AllScreens)
+        {
+            if (screen.WorkingArea.Contains(point))
+                return true;
+        }
+        return false;
     }
 
     /// <summary>
@@ -285,6 +325,8 @@ public partial class MainWindow : Window
 
         _account = account;
         _cache = new MessageCache(account.Email);
+        _scheduledSends = new ScheduledSendStore(account.Email);
+        _offlineActions = new OfflineActionQueue(account.Email);
         _mail = backend;
         _mail.MailboxActivity += OnMailboxActivity;
         _mail.ConnectionStateChanged += OnConnectionStateChanged;
@@ -292,10 +334,17 @@ public partial class MainWindow : Window
         // rather than news — so start the new-mail baseline over on every account switch.
         _notifier.Reset();
         UpdateSelfDomain();
+        SyncVipSenders();
         _currentFolder = "Inbox";
         HighlightFolder("Inbox");
         ResetReadingPane();
         ClearSelection();
+        // A search from the previous account means nothing here — without this, RefreshMessagesAsync
+        // (MainWindow.MessageList.cs) sees _serverSearchActive still true and skips replacing the
+        // list, so account A's search results (and stale pager/status text) stayed on screen after
+        // switching to account B until the user happened to touch the search box themselves.
+        SearchBox.Text = "";
+        _serverSearchActive = false;
 
         StatusText.Text = "Connected";
         UpdateAccountButtonVisual();
@@ -308,12 +357,25 @@ public partial class MainWindow : Window
         // another client that don't always trip CountChanged) — no reason to poll every 60s for
         // the common case IDLE already handles.
         _pollTimer.Start();
+        _scheduledSendTimer.Start();
+        UpdateScheduledBadge();
+        // A scheduled send whose time already passed while the app was closed/offline goes out on
+        // this very first tick, rather than waiting up to 30s — the same "catch up immediately"
+        // behavior a real server-side scheduler would have.
+        _ = SendDueScheduledMessagesAsync();
     }
 
     /// <summary>Fired from the IMAP IDLE background loop's own thread — never touch UI state
     /// directly from here.</summary>
-    private void OnMailboxActivity() =>
+    private void OnMailboxActivity()
+    {
+        // Diagnostic for a live-reported "notification took 1-2 minutes" complaint with no error in
+        // the log — this timestamp is what tells a genuine slow-to-notify-the-client IMAP server
+        // apart from a delay introduced somewhere in the app's own dispatch/refresh/notify chain,
+        // which the log alone couldn't distinguish. Remove once that's actually diagnosed.
+        Log.Info("IDLE: mailbox activity detected, queuing an announcing refresh");
         Dispatcher.BeginInvoke(async () => await RefreshMessagesAsync(announceNewMail: true));
+    }
 
     /// <summary>Also raised from a background thread — same rule.</summary>
     private void OnConnectionStateChanged(ConnectionState state) =>
@@ -328,7 +390,11 @@ public partial class MainWindow : Window
     /// </summary>
     private void SetConnectionState(ConnectionState state)
     {
+        var wasOffline = _connectionState == ConnectionState.Offline;
         _connectionState = state;
+
+        if (wasOffline && state is ConnectionState.Push or ConnectionState.Polling)
+            _ = ReplayOfflineActionsAsync();
 
         var colour = state switch
         {
@@ -482,22 +548,6 @@ public partial class MainWindow : Window
         menu.IsOpen = true;
     }
 
-    /// <summary>Manually-added contacts (account page's Contacts section) plus, once signed in,
-    /// everyone auto-learned from mail history — manual entries win on display name when both
-    /// exist for the same address, since a manual edit is deliberate.</summary>
-    private IReadOnlyList<ContactEntry> ListAllContacts()
-    {
-        var manual = ManualContactsStore.Load()
-            .Select(c => new ContactEntry(
-                string.IsNullOrWhiteSpace(c.Name) ? c.Email : c.Name, c.Email,
-                string.IsNullOrWhiteSpace(c.Name) ? c.Email : $"{c.Name} <{c.Email}>"))
-            .ToList();
-
-        var learned = _mail?.Contacts.ListAll() ?? [];
-        return manual.Concat(learned.Where(l => !manual.Any(m => m.Address.Equals(l.Address, StringComparison.OrdinalIgnoreCase))))
-            .ToList();
-    }
-
     private IReadOnlyList<ContactEntry> SuggestAllContacts(string query, int max = 6)
     {
         if (string.IsNullOrWhiteSpace(query))
@@ -523,6 +573,7 @@ public partial class MainWindow : Window
     private async Task SignOutActiveAsync()
     {
         _pollTimer.Stop();
+        _scheduledSendTimer.Stop();
         if (_mail is not null)
         {
             _mail.MailboxActivity -= OnMailboxActivity;
@@ -553,6 +604,7 @@ public partial class MainWindow : Window
 
         UpdateAccountButtonVisual();
         UpdateSelfDomain();
+        SyncVipSenders();
         _liveFolders.Clear();
         LiveFolderSection.Visibility = Visibility.Collapsed;
         LoadMockFolder("Inbox");

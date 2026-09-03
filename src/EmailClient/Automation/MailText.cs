@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Text.RegularExpressions;
 using System.Linq;
 
@@ -23,9 +23,18 @@ public static class MailText
     private static readonly Regex BlockEnd =
         new(@"</(p|div|h[1-6]|ul|ol|blockquote|table)\s*>", RegexOptions.IgnoreCase);
     private static readonly Regex ListItem = new(@"<li\b[^>]*>", RegexOptions.IgnoreCase);
-    private static readonly Regex AnyTag = new("<[^>]+>");
+    // A naive "<[^>]+>" stops at the first literal '>' it finds, including one sitting inside a
+    // quoted attribute value (e.g. <img alt="1 > 2" src="x.png">) — that used to leave the tag's
+    // own tail (' 2" src="x.png">') as visible garbage in the plain-text output. This version
+    // treats a quoted span as opaque so a '>' inside quotes doesn't end the tag early.
+    private static readonly Regex AnyTag = new(@"<[^>""']*(?:(?:""[^""]*""|'[^']*')[^>""']*)*>");
     private static readonly Regex RepeatedBlankLines = new(@"(\n\s*){3,}");
-    private static readonly Regex RepeatedSpaces = new(@"[ \t]{2,}");
+    // Also collapses runs of U+00A0 (non-breaking space) alongside plain space/tab —
+    // Outlook's own HTML commonly indents with runs of &nbsp; instead of real spacing,
+    // which otherwise survived this collapse intact and showed up as odd gaps in snippets/
+    // quotes. Written as an escape, never the literal character, so it can't be silently
+    // dropped by a tool that mishandles non-ASCII bytes.
+    private static readonly Regex RepeatedSpaces = new("[ \t\u00A0]{2,}");
 
     /// <summary>Readable plain text from message HTML, with block structure kept as line breaks.</summary>
     public static string HtmlToPlainText(string html)
@@ -54,7 +63,18 @@ public static class MailText
     public static string Snippet(string html, int maxLength = 120)
     {
         var text = RepeatedSpaces.Replace(HtmlToPlainText(html).Replace('\n', ' '), " ").Trim();
-        return text.Length <= maxLength ? text : string.Concat(text.AsSpan(0, maxLength).TrimEnd(), "…");
+        if (text.Length <= maxLength)
+            return text;
+
+        // A raw char-count cut can land inside a surrogate pair (an emoji, or anything outside the
+        // BMP) — common in emoji-laden newsletter/marketing HTML — leaving an orphaned high
+        // surrogate that renders as a broken glyph. Back off one position when that's about to
+        // happen so the pair stays whole.
+        var cut = maxLength;
+        if (char.IsHighSurrogate(text[cut - 1]) && char.IsLowSurrogate(text[cut]))
+            cut--;
+
+        return string.Concat(text.AsSpan(0, cut).TrimEnd(), "…");
     }
 
     /// <summary>Prefixes each line with "&gt; ", the plain-text quoting convention every mail client uses.</summary>

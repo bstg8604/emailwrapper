@@ -28,6 +28,13 @@ public partial class MainWindow
 {
     // ---- Reading ------------------------------------------------------------------------
 
+    /// <summary>Shared rather than a fresh HttpClient per image click (that also leaks a socket
+    /// per click under load), and explicitly timed out — same reasoning as ImapMailBackend's own
+    /// NetworkTimeoutMs: the default HttpClient timeout is 100 seconds, long enough that a stalled
+    /// host (a dead link, a server that accepts the connection but never answers) reads as the
+    /// click having done nothing at all rather than a fetch still in progress.</summary>
+    private static readonly HttpClient InlineImageHttp = new() { Timeout = TimeSpan.FromSeconds(20) };
+
     /// <summary>
     /// Wraps message HTML for the reading pane. The explicit light palette and color-scheme are
     /// load-bearing: without them WebView2 follows the OS dark theme and renders the default page
@@ -52,7 +59,13 @@ public partial class MainWindow
            the heuristic off everywhere instead of fighting it card by card. */
         * { overflow-anchor: none; }
         img, video { max-width: 100%; height: auto; }
-        table { max-width: 100%; }
+        /* Not forcing visible borders/padding onto every table the way the compose editor does for
+           pasted spreadsheet data — a huge share of real-world HTML mail (newsletters, marketing)
+           uses borderless tables purely as a legacy layout grid, and gridlines on those would make
+           an intentionally clean email look broken. border-collapse is safe regardless: it only
+           changes how a table *that already has borders* joins them (single shared lines instead of
+           doubled ones with gaps), so it can't add a visual border where the sender didn't put one. */
+        table { max-width: 100%; border-collapse: collapse; }
         pre { white-space: pre-wrap; word-wrap: break-word; }
         a { color: #6d28d9; }
         .qcard { margin: 12px 0 0; border: 1px solid #ebebef; border-radius: 12px; background: #ffffff;
@@ -80,7 +93,9 @@ public partial class MainWindow
         .qattach { display: inline-flex; align-items: center; gap: 7px; background: #f4f4f6;
           border-radius: 7px; padding: 7px 10px; font-size: 12px; color: #333; text-decoration: none; }
         .qattach:hover { background: #ebebee; }
-        .qaicon { font-size: 12px; }
+        .qaicon { display: inline-flex; align-items: center; justify-content: center; width: 22px;
+          height: 22px; border-radius: 6px; flex: none; }
+        .qaicon svg { display: block; }
         .qasize { color: #aaa; font-size: 11px; }
         .qattach-all { font-size: 12px; color: #6d28d9; text-decoration: none; padding: 7px 4px; }
         .qattach-all:hover { text-decoration: underline; }
@@ -316,19 +331,24 @@ public partial class MainWindow
         };
     }
 
-    private static void OpenInDefaultBrowser(string url)
+    /// <returns>False when the link was rejected (not a well-formed http/https URL) or the OS
+    /// couldn't hand it to a browser — callers that show status text use this to say so, rather
+    /// than the click silently doing nothing.</returns>
+    private static bool OpenInDefaultBrowser(string url)
     {
         if (!Uri.TryCreate(url, UriKind.Absolute, out var parsed)
             || (parsed.Scheme != Uri.UriSchemeHttp && parsed.Scheme != Uri.UriSchemeHttps))
-            return;
+            return false;
 
         try
         {
             Process.Start(new ProcessStartInfo(parsed.AbsoluteUri) { UseShellExecute = true });
+            return true;
         }
         catch
         {
             // Nothing sensible to do if the OS can't hand the link to a browser.
+            return false;
         }
     }
 
@@ -395,12 +415,13 @@ public partial class MainWindow
             return;
         var label = query.GetValueOrDefault("label", realUrl);
 
-        var choice = System.Windows.MessageBox.Show(this,
+        var choice = EmailClient.UI.ConfirmDialog.Show(this, "Suspicious link",
             $"This link's text says it goes to:\n{label}\n\nBut it actually opens:\n{realUrl}\n\n" +
             "This is a common phishing trick. Open it anyway?",
-            "Suspicious link", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
+            warningIcon: true, new EmailClient.UI.ConfirmChoice("Cancel"),
+            new EmailClient.UI.ConfirmChoice("Open anyway", Destructive: true));
 
-        if (choice == MessageBoxResult.Yes)
+        if (choice == "Open anyway")
             OpenInDefaultBrowser(realUrl);
     }
 
@@ -438,6 +459,12 @@ public partial class MainWindow
             || !int.TryParse(idxStr, out var idx)
             || !_conversationImages.TryGetValue(id, out var images) || idx < 0 || idx >= images.Count)
             return;
+
+        // A remote (non-data-URI) image has to actually be fetched before it can open, and with
+        // InlineImageHttp's own 20s timeout that's long enough to otherwise look like the click
+        // just didn't register.
+        if (!images[idx].StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+            StatusText.Text = "Opening image…";
 
         var path = await MaterializeImageAsync(images[idx]);
         if (path is null)
@@ -480,8 +507,7 @@ public partial class MainWindow
             {
                 var ext = Path.GetExtension(uri.LocalPath) is { Length: > 1 } e ? e : ".img";
                 var path = Path.Combine(AttachmentCacheDirectory, $"inline-{Guid.NewGuid():N}{ext}");
-                using var http = new HttpClient();
-                var bytes = await http.GetByteArrayAsync(uri);
+                var bytes = await InlineImageHttp.GetByteArrayAsync(uri);
                 await File.WriteAllBytesAsync(path, bytes);
                 return path;
             }
@@ -511,9 +537,39 @@ public partial class MainWindow
         if (_blockedImagesHtml is null)
             return;
         ImagesBlockedBar.SlideUpHide();
-        ReadingPane.NavigateToString(WrapHtml(_blockedImagesHtml));
+        NavigateReadingPane(WrapHtml(_blockedImagesHtml));
         _blockedImagesHtml = null;
     }
+
+    /// <summary>
+    /// NavigateToString silently caps out at roughly 1.5M characters and throws
+    /// ArgumentException ("Value does not fall within the expected range") instead of truncating
+    /// or wrapping — a real crash seen live, from a message whose rendered HTML (a long quoted
+    /// thread, several inline images resolved to base64 data URIs) pushed past that. There's no
+    /// stream-based navigation API to fall back to here, so this writes the content to a temp
+    /// .html file and navigates there instead — a real file has no such size limit.
+    /// </summary>
+    private void NavigateReadingPane(string html)
+    {
+        try
+        {
+            ReadingPane.NavigateToString(html);
+        }
+        catch (ArgumentException)
+        {
+            // One fixed path, reused (overwritten) every time this fallback fires, rather than a
+            // fresh Guid-named file per call — the first version of this left one orphaned .html
+            // file in %TEMP% per oversized message opened, for the rest of the process's life.
+            // Overwriting is safe: Navigate reads the file once as part of loading it, and rewriting
+            // it afterward (for the *next* oversized message) doesn't touch whatever already
+            // finished rendering from the previous read.
+            File.WriteAllText(_overflowHtmlPath, html, System.Text.Encoding.UTF8);
+            ReadingPane.CoreWebView2.Navigate(new Uri(_overflowHtmlPath).AbsoluteUri);
+        }
+    }
+
+    private readonly string _overflowHtmlPath =
+        Path.Combine(Path.GetTempPath(), $"purplemail-msg-overflow-{Environment.ProcessId}.html");
 
     private bool _syncingSelection;
     // Bumped on every selection change so a slow fetch that's still in flight when a newer one
@@ -673,6 +729,15 @@ public partial class MainWindow
         else
             ExternalSenderBar.Visibility = Visibility.Collapsed;
 
+        _unsubscribeUrl = IsIitbSender(detail.From) ? null : detail.UnsubscribeUrl;
+        _unsubscribeMailto = IsIitbSender(detail.From) ? null : detail.UnsubscribeMailto;
+        if (_unsubscribeUrl is not null || _unsubscribeMailto is not null)
+            UnsubscribeBar.SlideDownReveal();
+        else
+            UnsubscribeBar.Visibility = Visibility.Collapsed;
+
+        UpdateVipToggleUi(row.SenderAddress);
+
         // Every message renders the same way — as one or more Apple Mail-style cards, each fully
         // self-contained with its own avatar/sender/to/date — rather than switching between a plain
         // layout for a lone message and cards only once there's a real conversation. A single
@@ -708,10 +773,11 @@ public partial class MainWindow
             else if (FindMeetingLink(cleanHtml) is { } meetingLink)
             {
                 _meetingLinkUrl = meetingLink.Url;
-                // The subject is almost always the meeting's real name ("Weekly sync", "Thesis
-                // review") — far more useful as the card's title than repeating "Zoom meeting" or the
-                // raw URL, which is all the link itself carries.
-                MeetingBarTitle.Text = detail.Subject;
+                // A Zoom invite's own "Topic: ..." line is the meeting's real name when present —
+                // otherwise the mail subject is almost always the meeting's real name too ("Weekly
+                // sync", "Thesis review"), far more useful as the card's title than repeating "Zoom
+                // meeting" or the raw URL, which is all the link itself carries.
+                MeetingBarTitle.Text = meetingLink.Title ?? detail.Subject;
                 MeetingBarSubtext.Text = meetingLink.When is { } linkWhen
                     ? $"{meetingLink.Label} · {linkWhen}"
                     : $"{meetingLink.Label} meeting";
@@ -734,13 +800,19 @@ public partial class MainWindow
             MeetingBar.Visibility = Visibility.Collapsed;
         }
 
-        var (safeHtml, hadRemoteImages) = SanitizeRemoteImages(cleanHtml);
+        // IITB department/course notices lean on inline images (posters, timetables) more than most
+        // mail does, and the whole institute domain is about as trusted a sender as this app can
+        // reason about — so remote images load straight through instead of being blocked pending a
+        // click, the same trust boundary IsIitbSender already draws for the unsubscribe bar.
+        var (safeHtml, hadRemoteImages) = IsIitbSender(detail.From)
+            ? (cleanHtml, false)
+            : SanitizeRemoteImages(cleanHtml);
         _blockedImagesHtml = hadRemoteImages ? cleanHtml : null;
         if (hadRemoteImages)
             ImagesBlockedBar.SlideDownReveal();
         else
             ImagesBlockedBar.Visibility = Visibility.Collapsed;
-        ReadingPane.NavigateToString(WrapHtml(safeHtml));
+        NavigateReadingPane(WrapHtml(safeHtml));
         ReadingPaneLoadingOverlay.Visibility = Visibility.Collapsed;
 
         if (!UseMockData)
@@ -772,7 +844,7 @@ public partial class MainWindow
         }
         else
         {
-            try { siblings = await _mail!.FindConversationSiblingsAsync(key, row.Id); }
+            try { siblings = await _mail!.FindConversationSiblingsAsync(key, row.Id, openedDetail.MessageId, openedDetail.References); }
             catch (Exception) { siblings = []; } // best-effort — a lookup failure still shows the opened message alone
         }
 
@@ -791,7 +863,16 @@ public partial class MainWindow
                 results.Add((sibling, siblingDetail));
         }
 
-        return [.. results.OrderByDescending(r => r.Row.Timestamp ?? DateTime.MinValue)];
+        // The message actually opened always leads, regardless of where it falls chronologically
+        // in the thread — sorting purely newest-first (the old behaviour) meant opening an older
+        // message in a thread that already has a later reply (a search hit, or clicking an older
+        // row directly) buried the very message just opened — its attachments included — under
+        // that reply's card instead of showing it. The rest of the thread still reads newest-first
+        // below it, and this is a no-op for the common case of opening the newest message in a
+        // thread, since that's already what "leads" would mean anyway.
+        var opened = results[0];
+        var rest = results.Skip(1).OrderByDescending(r => r.Row.Timestamp ?? DateTime.MinValue);
+        return [opened, .. rest];
     }
 
     /// <summary>
@@ -841,9 +922,40 @@ public partial class MainWindow
 
     /// <summary>Renders a whole conversation as separate Apple Mail-style cards — every message,
     /// including the one that was actually clicked, gets identical treatment: its own avatar,
-    /// sender, to-line and date, newest at the top. See SeparateQuotedThread for the single-message
-    /// equivalent (a quoted-history blob baked into one message, rather than genuinely separate
-    /// stored messages).</summary>
+    /// sender, to-line and date. The message actually opened leads (see GatherConversationAsync),
+    /// then the rest of the thread newest-first below it. See SeparateQuotedThread for the
+    /// single-message equivalent (a quoted-history blob baked into one message, rather than
+    /// genuinely separate stored messages).</summary>
+    /// <summary>A colored file-type badge for an attachment chip, Gmail/Apple-Mail style — every
+    /// attachment used to show the same plain paperclip regardless of what it actually was, which
+    /// read as "the app doesn't know/care what kind of file this is" (a photo and a spreadsheet
+    /// looking identical). See AttachmentIconClassifier for the shared label/color mapping — the
+    /// compose window's own attachment chips (WPF, not HTML) use the exact same one.</summary>
+    private static string AttachmentIcon(string fileName)
+    {
+        var info = AttachmentIconClassifier.For(fileName);
+        var tint = HexToRgba(info.ColorHex, 0.14);
+        return $"""
+            <span class="qaicon" style="background:{tint}">
+              <svg viewBox="0 0 16 16" width="15" height="15"><path d="{info.PathData}" fill="none"
+                stroke="{info.ColorHex}" stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </span>
+            """;
+    }
+
+    /// <summary>"#RRGGBB" at the given opacity — the tinted-chip background every attachment icon
+    /// sits on (~14% of the mark's own color), computed once here so ComposeWindow's WPF chips and
+    /// these HTML ones stay derived from the exact same AttachmentIconClassifier colors instead of
+    /// each hand-tuning their own tint.</summary>
+    private static string HexToRgba(string hex, double alpha)
+    {
+        var h = hex.TrimStart('#');
+        var r = Convert.ToInt32(h[..2], 16);
+        var g = Convert.ToInt32(h[2..4], 16);
+        var b = Convert.ToInt32(h[4..6], 16);
+        return $"rgba({r},{g},{b},{alpha.ToString(System.Globalization.CultureInfo.InvariantCulture)})";
+    }
+
     private string BuildConversationHtml(List<(InboxRow Row, MessageDetail Detail)> conversation)
     {
         _conversationAttachments.Clear();
@@ -861,6 +973,14 @@ public partial class MainWindow
         {
             var body = WrapClickableImages(
                 SeparateQuotedThread(SanitizeHtmlForDisplay(msgDetail.BodyHtml), suppressNestedQuotes), msgRow.Id);
+            // A message whose entire content was quoted history — a bare forward with nothing of
+            // its own added — legitimately renders as nothing once suppressNestedQuotes strips that
+            // duplicate quote (see the comment above). Left as-is, that showed as a card with a
+            // sender/date header and a blank void underneath, reading as broken rather than as
+            // "there's genuinely nothing more here than what's already shown elsewhere."
+            if (System.Text.RegularExpressions.Regex.Replace(body, "<[^>]+>", "").Trim().Length == 0
+                && !body.Contains("<img", StringComparison.OrdinalIgnoreCase))
+                body = """<p style="color:#999;font-style:italic;">(No additional text — see the quoted message above)</p>""";
             var toLine = BuildRecipientLine("To", msgDetail.To);
             var ccLine = BuildRecipientLine("Cc", msgDetail.Cc);
             var senderLink = FormatAddressLink(msgDetail.From);
@@ -875,7 +995,7 @@ public partial class MainWindow
                     var a = attachments[i];
                     chips.Append($"""
                         <a class="qattach" href="appattach://open?id={Uri.EscapeDataString(msgRow.Id)}&idx={i}">
-                          <span class="qaicon">&#128206;</span>{Encode(a.Name)}<span class="qasize">{Encode(a.Size)}</span>
+                          {AttachmentIcon(a.Name)}{Encode(a.Name)}<span class="qasize">{Encode(a.Size)}</span>
                         </a>
                         """);
                 }
@@ -1100,6 +1220,11 @@ public partial class MainWindow
         System.Text.RegularExpressions.RegexOptions.IgnoreCase);
     private static readonly System.Text.RegularExpressions.Regex MeetingTimePattern = new(
         @"\b\d{1,2}(:\d{2})?\s?(AM|PM|am|pm)\b");
+    // Zoom's standard invite text always has a "Topic: <name>" line; Teams/Meet link-only invites
+    // (no .ics) rarely label a title this explicitly, so this is Zoom-specific rather than a
+    // general heuristic — a mail subject is still the best guess for the others.
+    private static readonly System.Text.RegularExpressions.Regex MeetingTopicPattern = new(
+        @"Topic:\s*(.+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
     /// <summary>
     /// Scans the raw (pre-sanitize) message HTML for a Zoom/Meet/Teams join link, so the reading
@@ -1109,7 +1234,7 @@ public partial class MainWindow
     /// of that step's behavior. Only used when the message has no real calendar invite to read
     /// (see MessageDetail.Calendar) — that's always the more accurate source when present.
     /// </summary>
-    private static (string Label, string Url, string? When)? FindMeetingLink(string html)
+    private static (string Label, string Url, string? When, string? Title)? FindMeetingLink(string html)
     {
         if (Automation.MeetingLinkFinder.Find(html) is not (var label, var url))
             return null;
@@ -1125,7 +1250,12 @@ public partial class MainWindow
             _ => null,
         };
 
-        return (label, url, when);
+        var topicMatch = MeetingTopicPattern.Match(plainText);
+        var title = topicMatch.Success
+            ? System.Net.WebUtility.HtmlDecode(topicMatch.Groups[1].Value.Trim())
+            : null;
+
+        return (label, url, when, string.IsNullOrWhiteSpace(title) ? null : title);
     }
 
     private static string Capitalize(string s) => s.Length == 0 ? s : char.ToUpperInvariant(s[0]) + s[1..].ToLowerInvariant();
@@ -1134,14 +1264,71 @@ public partial class MainWindow
     {
         if (_meetingLinkUrl is null)
             return;
-        try
+        // Same http(s)-only guard as every other sender-controlled link — a meeting link is text
+        // pulled straight out of the message body, so nothing stops a hostile sender putting an
+        // arbitrary URI scheme there for the shell to hand off to whatever handler claims it.
+        if (!OpenInDefaultBrowser(_meetingLinkUrl))
+            StatusText.Text = "Couldn't open the meeting link";
+    }
+
+    /// <summary>
+    /// The URL form needs nothing more than a browser tab — preferred over the mailto: form when a
+    /// sender offers both, since that one still requires composing and sending a message. No
+    /// signature on the mailto fallback (unlike a normal new message) — an unsubscribe request
+    /// isn't correspondence, and a signature block only adds noise a mailing list's parser has to
+    /// ignore.
+    /// </summary>
+    private void UnsubscribeButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_unsubscribeUrl is not null)
         {
-            Process.Start(new ProcessStartInfo(_meetingLinkUrl) { UseShellExecute = true });
+            // Same http(s)-only guard as the meeting link and every other sender-controlled URL —
+            // see OpenInDefaultBrowser.
+            if (!OpenInDefaultBrowser(_unsubscribeUrl))
+                StatusText.Text = "Couldn't open the unsubscribe link";
         }
-        catch (Exception ex)
+        else if (_unsubscribeMailto is not null)
         {
-            StatusText.Text = $"Couldn't open the meeting link: {ex.Message}";
+            var address = Uri.UnescapeDataString(_unsubscribeMailto["mailto:".Length..].Split('?')[0]);
+            if (!string.IsNullOrWhiteSpace(address))
+                OpenCompose(address, subject: "Unsubscribe");
         }
+    }
+
+    /// <summary>Reflects whether the open message's sender is currently VIP — filled/gold star and
+    /// "Remove VIP" when they are, outline star and "Mark as VIP" when they aren't. Matches
+    /// StarToggle's own filled-vs-outline convention in the message list.</summary>
+    private void UpdateVipToggleUi(string senderAddress)
+    {
+        var isVip = !string.IsNullOrEmpty(senderAddress) && InboxRow.VipSenders.Contains(senderAddress);
+        VipToggleGlyph.Text = char.ConvertFromUtf32(isVip ? 0xE735 : 0xE734); // filled/outline star (see comment above)
+        VipToggleGlyph.Foreground = isVip
+            ? (System.Windows.Media.Brush)FindResource("Warning")
+            : (System.Windows.Media.Brush)FindResource("BorderStrong");
+        VipToggleButton.ToolTip = isVip ? "Remove VIP" : "Mark sender as VIP";
+    }
+
+    /// <summary>Toggles VIP status for the open message's sender — everywhere that address shows up
+    /// in the message list, not just this one message (see InboxRow.IsVip).</summary>
+    private void VipToggleButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_openRow is not { SenderAddress.Length: > 0 } row)
+            return;
+
+        // Case-insensitive removal, matching InboxRow.VipSenders' own comparer below — List.Remove
+        // is case-sensitive by default, which could otherwise fail to find/remove an address that
+        // was stored with different casing than the one this exact message happens to carry,
+        // leaving the toggle stuck "on" with no visible way to turn it back off.
+        var existingIndex = _settings.VipSenders.FindIndex(
+            a => a.Equals(row.SenderAddress, StringComparison.OrdinalIgnoreCase));
+        if (existingIndex >= 0)
+            _settings.VipSenders.RemoveAt(existingIndex);
+        else
+            _settings.VipSenders.Add(row.SenderAddress);
+        _settings.Save();
+        SyncVipSenders();
+        UpdateVipToggleUi(row.SenderAddress);
+        _messagesView.Refresh();
     }
 
     /// <summary>
@@ -1167,6 +1354,7 @@ public partial class MainWindow
         ExternalSenderBar.Visibility = Visibility.Collapsed;
         MeetingBar.Visibility = Visibility.Collapsed;
         ImagesBlockedBar.Visibility = Visibility.Collapsed;
+        UnsubscribeBar.Visibility = Visibility.Collapsed;
         JoinMeetingButton.Visibility = Visibility.Visible;
 
         // A native overlay instead of a placeholder WebView2 navigation — navigating here just to
@@ -1182,11 +1370,14 @@ public partial class MainWindow
         _openDetail = null;
         _blockedImagesHtml = null;
         _meetingLinkUrl = null;
+        _unsubscribeUrl = null;
+        _unsubscribeMailto = null;
         _conversationAttachments.Clear();
         _conversationImages.Clear();
         ImagesBlockedBar.Visibility = Visibility.Collapsed;
         ExternalSenderBar.Visibility = Visibility.Collapsed;
         MeetingBar.Visibility = Visibility.Collapsed;
+        UnsubscribeBar.Visibility = Visibility.Collapsed;
         JoinMeetingButton.Visibility = Visibility.Visible;
         EmptyState.Visibility = Visibility.Visible;
         ReadingCard.Visibility = Visibility.Collapsed;

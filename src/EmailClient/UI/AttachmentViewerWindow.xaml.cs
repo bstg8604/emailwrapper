@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Net;
@@ -86,10 +86,10 @@ public partial class AttachmentViewerWindow : Window
 
     private static string GlyphFor(string fileName) => Path.GetExtension(fileName).ToLowerInvariant() switch
     {
-        ".png" or ".jpg" or ".jpeg" or ".gif" or ".bmp" or ".webp" or ".ico" or ".svg" => "",
-        ".pdf" => "",
-        ".zip" or ".rar" or ".7z" => "",
-        _ => "",
+        ".png" or ".jpg" or ".jpeg" or ".gif" or ".bmp" or ".webp" or ".ico" or ".svg" => char.ConvertFromUtf32(0xEB9F), // Pictures
+        ".pdf" => char.ConvertFromUtf32(0xEA90), // PDF
+        ".zip" or ".rar" or ".7z" => char.ConvertFromUtf32(0xF012), // archive
+        _ => char.ConvertFromUtf32(0xE8A5), // generic document
     };
 
     public static string FormatSize(long bytes) => bytes switch

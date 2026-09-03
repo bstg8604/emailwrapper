@@ -29,8 +29,20 @@ namespace EmailClient.Mail;
 /// </summary>
 public sealed class ImapMailBackend : IAsyncDisposable
 {
+    /// <summary>
+    /// MailKit's own default (120,000ms/2 minutes) bounds every socket operation including the
+    /// initial connect — but a live report showed the app appearing to hang indefinitely with no
+    /// error, status text frozen on "Opening Inbox…" while the connection dot had already flipped
+    /// to Offline. Two minutes of apparent freeze before any error can surface reads as "stuck",
+    /// not "slow" — a campus network dropping IMAPS packets silently (rather than actively
+    /// refusing the connection) leaves nothing to distinguish "still trying" from "hung forever"
+    /// until this fires. 20 seconds is generous for a real LAN/campus connection while still
+    /// failing fast enough that a genuinely stuck attempt reads as an error, not a freeze.
+    /// </summary>
+    private const int NetworkTimeoutMs = 20_000;
+
     private readonly AccountSettings _account;
-    private readonly ImapClient _imap = new();
+    private readonly ImapClient _imap = new() { Timeout = NetworkTimeoutMs };
     private readonly Dictionary<string, IMailFolder> _foldersByMailbox = new(StringComparer.OrdinalIgnoreCase);
     private readonly ContactsIndex _contacts = new();
 
@@ -103,7 +115,7 @@ public sealed class ImapMailBackend : IAsyncDisposable
             ImapClient? client = null;
             try
             {
-                client = new ImapClient();
+                client = new ImapClient { Timeout = NetworkTimeoutMs };
                 await client.ConnectAsync(_account.ImapHost, _account.ImapPort, SecureSocketOptions.SslOnConnect, token);
                 await client.AuthenticateAsync(_account.LoginName, _account.Password, token);
                 var folder = await client.GetFolderAsync(mailbox, token) ?? client.Inbox;
@@ -199,10 +211,70 @@ public sealed class ImapMailBackend : IAsyncDisposable
 
     public ImapMailBackend(AccountSettings account) => _account = account;
 
+    // ---- Thread-safety ----------------------------------------------------------------------
+
+    /// <summary>
+    /// MailKit's ImapClient can't run two commands concurrently on one connection — attempting to
+    /// do so throws "The ImapClient is currently busy processing a command in another thread."
+    /// Confirmed live: the 60-second poll tick and an IDLE-triggered refresh raced here, and since
+    /// the exception aborted the refresh before it ever reached the new-mail notification code,
+    /// this was the actual cause of notifications sometimes just not showing up — not a
+    /// notification-logic bug at all. Every public method that issues a real command on
+    /// <see cref="_imap"/> acquires this first via <see cref="AcquireImapLockAsync"/>.
+    /// </summary>
+    private readonly SemaphoreSlim _imapLock = new(1, 1);
+
+    /// <summary>
+    /// Tracks which instance's lock (if any) the *current* async call chain already holds — a
+    /// locked method calling another locked method on the same instance (e.g. RenameFolderAsync
+    /// calling SelectFolderAsync, or SaveDraftAsync's 2-arg overload calling the 3-arg one) would
+    /// otherwise deadlock trying to re-acquire a semaphore that isn't reentrant. Keyed by instance
+    /// (not just a bool) so this stays correct if the app ever holds two accounts' backends live
+    /// at once — a lock held on one must never be mistaken for one held on another.
+    /// </summary>
+    private static readonly AsyncLocal<ImapMailBackend?> _lockHolder = new();
+
+    /// <summary>
+    /// Generous on purpose — several legitimately queued operations can each take up to
+    /// NetworkTimeoutMs while they wait their turn for this same lock, and this only needs to
+    /// catch the case that shouldn't happen at all: something holding the lock well past what any
+    /// realistic queue depth could explain (a future bug, a code path that skips the per-operation
+    /// timeout). Defense in depth for the one thing NetworkTimeoutMs itself can't cover — every
+    /// operation under the lock respecting its own timeout is what actually keeps this from firing
+    /// in practice.
+    /// </summary>
+    private const int LockTimeoutMs = 60_000;
+
+    private async Task<IDisposable> AcquireImapLockAsync()
+    {
+        if (ReferenceEquals(_lockHolder.Value, this))
+            return NullReleaser.Instance;
+        if (!await _imapLock.WaitAsync(LockTimeoutMs))
+            throw new TimeoutException("The mail server connection is busy and didn't free up in time.");
+        _lockHolder.Value = this;
+        return new ImapLockReleaser(this);
+    }
+
+    private sealed class NullReleaser : IDisposable
+    {
+        public static readonly NullReleaser Instance = new();
+        public void Dispose() { }
+    }
+
+    private sealed class ImapLockReleaser(ImapMailBackend owner) : IDisposable
+    {
+        public void Dispose()
+        {
+            _lockHolder.Value = null;
+            owner._imapLock.Release();
+        }
+    }
+
     // ---- Connection -----------------------------------------------------------------------
 
     public async Task ConnectAsync()
     {
+        using var _ = await AcquireImapLockAsync();
         SetState(ConnectionState.Connecting);
         Log.Info($"Connecting to {_account.ImapHost}:{_account.ImapPort} as {_account.LoginName}");
         await _imap.ConnectAsync(_account.ImapHost, _account.ImapPort, SecureSocketOptions.SslOnConnect);
@@ -282,8 +354,9 @@ public sealed class ImapMailBackend : IAsyncDisposable
         ("Archive", MailKit.SpecialFolder.Archive, ["Archive", "All Mail"]),
     ];
 
-    public Task<IReadOnlyDictionary<string, string>> GetSpecialMailboxesAsync()
+    public async Task<IReadOnlyDictionary<string, string>> GetSpecialMailboxesAsync()
     {
+        using var _ = await AcquireImapLockAsync();
         var map = new Dictionary<string, string> { ["Inbox"] = _imap.Inbox.FullName };
 
         foreach (var (key, special, fallbackNames) in SpecialFolders)
@@ -300,7 +373,7 @@ public sealed class ImapMailBackend : IAsyncDisposable
                 map[key] = folder.FullName;
         }
 
-        return Task.FromResult<IReadOnlyDictionary<string, string>>(map);
+        return map;
     }
 
     private async Task<IMailFolder?> ResolveSpecialAsync(string key)
@@ -315,6 +388,7 @@ public sealed class ImapMailBackend : IAsyncDisposable
 
     public async Task<IReadOnlyList<Automation.MailFolder>> ListFoldersAsync()
     {
+        using var _ = await AcquireImapLockAsync();
         var result = new List<Automation.MailFolder>();
         foreach (var folder in _foldersByMailbox.Values)
         {
@@ -344,6 +418,7 @@ public sealed class ImapMailBackend : IAsyncDisposable
     /// <summary>Creates a new top-level folder — used by the account page's Folders section.</summary>
     public async Task CreateFolderAsync(string name)
     {
+        using var _ = await AcquireImapLockAsync();
         var root = _imap.GetFolder(_imap.PersonalNamespaces[0]);
         await root.CreateAsync(name, isMessageFolder: true);
         await IndexFoldersAsync();
@@ -351,6 +426,7 @@ public sealed class ImapMailBackend : IAsyncDisposable
 
     public async Task RenameFolderAsync(string mailbox, string newName)
     {
+        using var _ = await AcquireImapLockAsync();
         if (!_foldersByMailbox.TryGetValue(mailbox, out var folder))
             throw new InvalidOperationException("That folder no longer exists.");
 
@@ -369,6 +445,7 @@ public sealed class ImapMailBackend : IAsyncDisposable
 
     public async Task DeleteFolderAsync(string mailbox)
     {
+        using var _ = await AcquireImapLockAsync();
         if (!_foldersByMailbox.TryGetValue(mailbox, out var folder))
             throw new InvalidOperationException("That folder no longer exists.");
 
@@ -385,6 +462,7 @@ public sealed class ImapMailBackend : IAsyncDisposable
     /// being swallowed, so the caller can tell the user why rather than just "couldn't open".</summary>
     public async Task<bool> SelectFolderAsync(string mailbox)
     {
+        using var _ = await AcquireImapLockAsync();
         if (!_foldersByMailbox.TryGetValue(mailbox, out var folder))
             return false;
 
@@ -465,6 +543,7 @@ public sealed class ImapMailBackend : IAsyncDisposable
 
     public async Task<MessagePage> ListMessagesAsync()
     {
+        using var _ = await AcquireImapLockAsync();
         await EnsureConnectedAsync();
         if (_current is null)
             return MessagePage.Empty;
@@ -500,11 +579,22 @@ public sealed class ImapMailBackend : IAsyncDisposable
     /// folder, not just whatever page happens to be loaded. Apple Mail threads a reply from months
     /// ago into a conversation even if it isn't on the currently visible page, and a client that
     /// only ever looks at the loaded 50 rows would silently fail to thread anything older than that.
-    /// Envelope-only fetch (no body octets) keeps this cheap even for a large folder, matching
-    /// SearchAsync's own approach.
+    /// Primarily matches on a real Message-ID/References link — the same mechanism Apple Mail's own
+    /// conversation view is actually built on — with subject text (see InboxRow.ConversationKey)
+    /// only as a fallback OR'd in alongside it, not the primary signal. That ordering matters: two
+    /// genuinely unrelated senders can share a subject by pure coincidence (or a mail gateway's
+    /// tag/course-code convention), which a subject-primary match would merge into one conversation
+    /// with no real relationship backing it — a real header link can't produce that false positive,
+    /// since it requires an actual reply/forward relationship a mail client wrote into the message
+    /// itself. Subject is kept only for the messages IMAP handed back with no usable Message-ID at
+    /// all — rare, but not worth losing all grouping over. Envelope-only fetch (no body octets)
+    /// keeps this cheap even for a large folder, matching SearchAsync's own approach.
     /// </summary>
-    public async Task<IReadOnlyList<InboxRow>> FindConversationSiblingsAsync(string conversationKey, string excludeId, int max = 8)
+    public async Task<IReadOnlyList<InboxRow>> FindConversationSiblingsAsync(
+        string conversationKey, string excludeId, string? openedMessageId = null,
+        IReadOnlyList<string>? openedReferences = null, int max = 8)
     {
+        using var _ = await AcquireImapLockAsync();
         await EnsureConnectedAsync();
         if (_current is null || string.IsNullOrWhiteSpace(conversationKey))
             return [];
@@ -515,11 +605,69 @@ public sealed class ImapMailBackend : IAsyncDisposable
 
         var envelopes = await _current.FetchAsync(0, total - 1,
             MessageSummaryItems.Envelope | MessageSummaryItems.Flags | MessageSummaryItems.UniqueId |
-            MessageSummaryItems.InternalDate | MessageSummaryItems.BodyStructure);
+            MessageSummaryItems.InternalDate | MessageSummaryItems.BodyStructure | MessageSummaryItems.References);
 
-        return envelopes
-            .Select(ToRow)
-            .Where(r => r.Id != excludeId && r.ConversationKey == conversationKey)
+        // Every id either side considers "part of my thread" — the opened message's own id plus
+        // whatever it declared as its own ancestry. A candidate belongs if its own id is in that
+        // set, or if the opened message's id is in *its* ancestry — a reply can arrive before the
+        // message it's threaded to has been indexed either way round. Normalized (angle brackets
+        // stripped, trimmed) because the two sources these ids come from don't necessarily agree on
+        // that formatting: MimeMessage.MessageId/References (what openedMessageId/openedReferences
+        // are built from) always strip the <>, but IMAP's own ENVELOPE structure — where
+        // Envelope.MessageId below is read from — hands back the raw header value, brackets
+        // included. Comparing those two forms unnormalized would silently never match at all;
+        // normalizing here is what makes the two sides comparable in the first place. A degenerate
+        // id (no "@") is rejected outright — a real Message-ID always has one, so an empty/blank or
+        // otherwise malformed value some server quirk produced can't coincidentally collide across
+        // unrelated messages the way a short/blank id shared by chance could.
+        static string? NormalizeId(string? id)
+        {
+            var trimmed = id?.Trim().Trim('<', '>');
+            return string.IsNullOrEmpty(trimmed) || !trimmed.Contains('@') ? null : trimmed;
+        }
+
+        var openedIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (NormalizeId(openedMessageId) is { } normalizedOpenedId)
+            openedIds.Add(normalizedOpenedId);
+        if (openedReferences is not null)
+            foreach (var r in openedReferences)
+                if (NormalizeId(r) is { } normalizedRef)
+                    openedIds.Add(normalizedRef);
+
+        bool HeaderLinked(IMessageSummary summary)
+        {
+            if (openedIds.Count == 0)
+                return false;
+            if (NormalizeId(summary.Envelope?.MessageId) is { } candidateId && openedIds.Contains(candidateId))
+                return true;
+            if (summary.References is null)
+                return false;
+            var openedId = NormalizeId(openedMessageId);
+            return openedId is not null
+                && summary.References.Any(r => string.Equals(NormalizeId(r), openedId, StringComparison.OrdinalIgnoreCase));
+        }
+
+        // Primary signal, matching how Apple Mail's own conversation view actually threads — a real
+        // Message-ID/References relationship, not text-matching a subject line that two genuinely
+        // unrelated senders can share by pure coincidence. Subject match stays as a fallback (OR'd
+        // in, not required) for the messages IMAP handed back with no usable Message-ID at all —
+        // rare, but not worth losing all grouping over.
+        var matches = envelopes
+            .Select(e => (Row: ToRow(e), Summary: e))
+            .Where(x => x.Row.Id != excludeId && (HeaderLinked(x.Summary) || x.Row.ConversationKey == conversationKey))
+            .ToList();
+
+        foreach (var (row, summary) in matches)
+        {
+            Log.Info($"Conversation sibling matched — id={row.Id} subject=\"{row.Subject}\" "
+                + $"viaSubject={row.ConversationKey == conversationKey} viaHeader={HeaderLinked(summary)} "
+                + $"candidateMessageId=\"{summary.Envelope?.MessageId}\" "
+                + $"candidateReferences=[{(summary.References is null ? "" : string.Join(", ", summary.References))}] "
+                + $"openedMessageId=\"{openedMessageId}\" openedReferences=[{(openedReferences is null ? "" : string.Join(", ", openedReferences))}]");
+        }
+
+        return matches
+            .Select(x => x.Row)
             .OrderByDescending(r => r.Timestamp ?? DateTime.MinValue)
             .Take(max)
             .ToList();
@@ -538,9 +686,20 @@ public sealed class ImapMailBackend : IAsyncDisposable
     /// </summary>
     public async Task<IReadOnlyList<InboxRow>> SearchAsync(string query, int maxResults = 300)
     {
+        using var _ = await AcquireImapLockAsync();
         await EnsureConnectedAsync();
         if (_current is null || string.IsNullOrWhiteSpace(query))
             return [];
+
+        // Gmail-style operators (from:/to:/subject:/has:attachment/is:unread/is:starred/is:read) —
+        // see SearchQueryParser for the exact syntax and its deliberate single-word-value limit.
+        // Applied at two points below: once here on envelope fields alone, to narrow candidates
+        // before the (potentially large) final fetch; again after that fetch, which is the only
+        // point flag/attachment operators can be checked at all, and the only point that's
+        // authoritative for every candidate regardless of whether it was found via free-text
+        // subject/sender matching or the server's own body search below (which knows nothing about
+        // operators, so a body-search hit still needs the same operator check applied to it).
+        var parsed = Automation.SearchQueryParser.Parse(query);
 
         var total = _current.Count;
         var uids = new HashSet<UniqueId>();
@@ -551,20 +710,25 @@ public sealed class ImapMailBackend : IAsyncDisposable
                 MessageSummaryItems.Envelope | MessageSummaryItems.UniqueId);
             foreach (var summary in envelopes)
             {
-                if (EnvelopeMatches(summary.Envelope, query))
+                if (!EnvelopeOperatorsMatch(summary.Envelope, parsed))
+                    continue;
+                if (parsed.FreeText.Length == 0 || EnvelopeMatches(summary.Envelope, parsed.FreeText))
                     uids.Add(summary.UniqueId);
             }
         }
 
-        try
+        if (parsed.FreeText.Length > 0)
         {
-            foreach (var uid in await _current.SearchAsync(SearchQuery.BodyContains(query)))
-                uids.Add(uid);
-        }
-        catch (Exception)
-        {
-            // Body search is a bonus on top of the subject/from/to substring match above, which
-            // already covers the common case — not worth failing the whole search over.
+            try
+            {
+                foreach (var uid in await _current.SearchAsync(SearchQuery.BodyContains(parsed.FreeText)))
+                    uids.Add(uid);
+            }
+            catch (Exception)
+            {
+                // Body search is a bonus on top of the subject/from/to substring match above, which
+                // already covers the common case — not worth failing the whole search over.
+            }
         }
 
         if (uids.Count == 0)
@@ -576,12 +740,50 @@ public sealed class ImapMailBackend : IAsyncDisposable
 
         var summaries = await _current.FetchAsync(take,
             MessageSummaryItems.Envelope | MessageSummaryItems.Flags | MessageSummaryItems.UniqueId |
-            MessageSummaryItems.InternalDate | MessageSummaryItems.BodyStructure);
+            MessageSummaryItems.InternalDate | MessageSummaryItems.BodyStructure | MessageSummaryItems.Size);
 
         return summaries
+            .Where(s => EnvelopeOperatorsMatch(s.Envelope, parsed) && FlagOperatorsMatch(s, parsed))
             .OrderByDescending(s => s.InternalDate ?? DateTimeOffset.MinValue)
             .Select(ToRow)
             .ToList();
+    }
+
+    private static bool EnvelopeOperatorsMatch(Envelope? envelope, Automation.SearchQueryParser.ParsedQuery parsed)
+    {
+        if (parsed.From is not null && !AddressListMatches(envelope?.From, parsed.From))
+            return false;
+        if (parsed.To is not null && !AddressListMatches(envelope?.To, parsed.To))
+            return false;
+        if (parsed.Subject is not null
+            && envelope?.Subject?.Contains(parsed.Subject, StringComparison.OrdinalIgnoreCase) != true)
+            return false;
+        return true;
+    }
+
+    private static bool FlagOperatorsMatch(IMessageSummary summary, Automation.SearchQueryParser.ParsedQuery parsed)
+    {
+        if (parsed.Unread is { } wantUnread)
+        {
+            var isUnread = !(summary.Flags?.HasFlag(MessageFlags.Seen) ?? false);
+            if (isUnread != wantUnread)
+                return false;
+        }
+        if (parsed.Starred is true && !(summary.Flags?.HasFlag(MessageFlags.Flagged) ?? false))
+            return false;
+        if (parsed.HasAttachment is true && !HasAttachments(summary.Body))
+            return false;
+        if (parsed.OlderThan is { } olderThan
+            && (summary.InternalDate is not { } d1 || d1.UtcDateTime >= olderThan))
+            return false;
+        if (parsed.NewerThan is { } newerThan
+            && (summary.InternalDate is not { } d2 || d2.UtcDateTime <= newerThan))
+            return false;
+        if (parsed.LargerThanBytes is { } largerThan && (summary.Size is not { } sz1 || sz1 < largerThan))
+            return false;
+        if (parsed.SmallerThanBytes is { } smallerThan && (summary.Size is not { } sz2 || sz2 > smallerThan))
+            return false;
+        return true;
     }
 
     private static bool EnvelopeMatches(Envelope? envelope, string query)
@@ -649,10 +851,17 @@ public sealed class ImapMailBackend : IAsyncDisposable
     /// <summary>Raw RFC 822 source of a message — the same "View source" real mail clients (and
     /// Thunderbird's Ctrl+U) offer, and genuinely the fastest way to diagnose a message that isn't
     /// rendering the way it should: seeing the exact MIME structure the server actually sent.</summary>
-    public async Task<string?> GetRawSourceAsync(string id)
+    /// <summary>The exact bytes MimeKit re-serializes the message to, unmodified — deliberately
+    /// not decoded to a string here. A text part re-encodes per its own declared charset (which is
+    /// very often not UTF-8: ISO-8859-1, Windows-1252, ISO-2022-JP…), so forcing a UTF-8 decode on
+    /// these bytes silently corrupted "View source" for any such message. Handing back the raw
+    /// bytes lets the caller write them straight to disk untouched and leave charset detection to
+    /// whatever opens the file, the same way saving a real .eml already works.</summary>
+    public async Task<byte[]?> GetRawSourceAsync(string id)
     {
         if (_current is null || !uint.TryParse(id, out var idValue))
             return null;
+        using var _ = await AcquireImapLockAsync();
         await EnsureConnectedAsync();
         var uid = new UniqueId(idValue);
 
@@ -663,7 +872,32 @@ public sealed class ImapMailBackend : IAsyncDisposable
                 : await _current.GetMessageAsync(uid);
             using var stream = new MemoryStream();
             message.WriteTo(stream);
-            return System.Text.Encoding.UTF8.GetString(stream.ToArray());
+            return stream.ToArray();
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Envelope-only Message-ID lookup for one UID — used to verify a queued offline
+    /// action still points at the same message before replaying it (see
+    /// MainWindow.OfflineActions.cs). A UID is only stable within one UIDVALIDITY generation; if
+    /// the folder gets rebuilt between when an action was queued and when it replays, the same UID
+    /// could now belong to a completely different message, and replaying blind would silently
+    /// mutate the wrong one.</summary>
+    public async Task<string?> GetMessageIdAsync(string id)
+    {
+        if (_current is null || !uint.TryParse(id, out var idValue))
+            return null;
+        using var _ = await AcquireImapLockAsync();
+        await EnsureConnectedAsync();
+        var uid = new UniqueId(idValue);
+
+        try
+        {
+            var summary = (await _current.FetchAsync(new[] { uid }, MessageSummaryItems.Envelope)).FirstOrDefault();
+            return summary?.Envelope?.MessageId;
         }
         catch (Exception)
         {
@@ -675,6 +909,7 @@ public sealed class ImapMailBackend : IAsyncDisposable
     {
         if (_current is null || !uint.TryParse(id, out var idValue))
             return null;
+        using var _ = await AcquireImapLockAsync();
         await EnsureConnectedAsync();
         var uid = new UniqueId(idValue);
 
@@ -710,6 +945,7 @@ public sealed class ImapMailBackend : IAsyncDisposable
         var bodyHtml = (message.Body is not null ? ExtractBodyHtml(message.Body) : null)
             ?? "<p>(This message has no readable body.)</p>";
         bodyHtml = ResolveEmbeddedImages(message, bodyHtml);
+        var (unsubUrl, unsubMailto) = ParseUnsubscribe(message);
 
         return new MessageDetail(
             message.Subject ?? "(no subject)",
@@ -720,7 +956,37 @@ public sealed class ImapMailBackend : IAsyncDisposable
             Cc: message.Cc.ToString(),
             Attachments: attachments,
             Calendar: TryParseCalendarInvite(message),
-            Timestamp: message.Date.LocalDateTime);
+            Timestamp: message.Date.LocalDateTime,
+            MessageId: message.MessageId,
+            References: message.References?.Count > 0 ? [.. message.References] : null,
+            UnsubscribeUrl: unsubUrl,
+            UnsubscribeMailto: unsubMailto);
+    }
+
+    /// <summary>
+    /// RFC 2369's List-Unsubscribe header — one or more comma-separated "&lt;...&gt;" options a
+    /// sender declares, typically an https: link and/or a mailto:. Preferring the http(s) form when
+    /// both exist: it needs nothing more than opening a browser tab, where the mailto: form still
+    /// requires composing and sending a message. Never inferred from body text — only ever set when
+    /// the sender actually declared it, the same way real mail clients (Gmail's "Unsubscribe"
+    /// pill, Apple Mail's banner) only offer this for messages that opted into RFC 2369 at all.
+    /// </summary>
+    private static (string? Url, string? Mailto) ParseUnsubscribe(MimeMessage message)
+    {
+        var header = message.Headers["List-Unsubscribe"];
+        if (string.IsNullOrWhiteSpace(header))
+            return (null, null);
+
+        string? url = null, mailto = null;
+        foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(header, "<([^>]+)>"))
+        {
+            var value = m.Groups[1].Value.Trim();
+            if (url is null && value.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+                url = value;
+            else if (mailto is null && value.StartsWith("mailto:", StringComparison.OrdinalIgnoreCase))
+                mailto = value;
+        }
+        return (url, mailto);
     }
 
     /// <summary>
@@ -764,6 +1030,13 @@ public sealed class ImapMailBackend : IAsyncDisposable
 
         if (entity is TextPart text)
         {
+            // A meeting invite's raw RFC 5545 ICS text (Outlook/Exchange, Teams, Zoom, Google
+            // Calendar all send one) — TryParseCalendarInvite already parses this same part into
+            // the proper CalendarInvite UI; multipart/mixed concatenating every child otherwise
+            // dumped its raw "BEGIN:VCALENDAR..." text straight into the message body instead.
+            if (text.ContentType.MimeType.Equals("text/calendar", StringComparison.OrdinalIgnoreCase))
+                return null;
+
             return text.IsHtml
                 ? text.Text
                 : $"<p>{System.Net.WebUtility.HtmlEncode(text.Text).Replace("\n", "<br/>")}</p>";
@@ -856,6 +1129,7 @@ public sealed class ImapMailBackend : IAsyncDisposable
     {
         if (_current is null || TryUid(id) is not { } uid)
             return false;
+        using var _ = await AcquireImapLockAsync();
         try
         {
             await EnsureConnectedAsync();
@@ -875,6 +1149,7 @@ public sealed class ImapMailBackend : IAsyncDisposable
     {
         if (_current is null || TryUid(id) is not { } uid)
             return false;
+        using var _ = await AcquireImapLockAsync();
         try
         {
             await EnsureConnectedAsync();
@@ -900,6 +1175,7 @@ public sealed class ImapMailBackend : IAsyncDisposable
                            // reverse the wrong (older) action instead of reporting "can't undo".
         if (_current is null || TryUid(id) is not { } uid)
             return false;
+        using var _ = await AcquireImapLockAsync();
         await EnsureConnectedAsync();
 
         var trash = await ResolveSpecialAsync("Trash");
@@ -924,6 +1200,7 @@ public sealed class ImapMailBackend : IAsyncDisposable
         _lastMove = null;
         if (TryUid(id) is not { } uid)
             return false;
+        using var _ = await AcquireImapLockAsync();
         await EnsureConnectedAsync();
         var archive = await ResolveSpecialAsync("Archive");
         return archive is not null && await MoveUidAsync(uid, archive);
@@ -934,6 +1211,7 @@ public sealed class ImapMailBackend : IAsyncDisposable
         _lastMove = null;
         if (TryUid(id) is not { } uid || !_foldersByMailbox.TryGetValue(mailbox, out var target))
             return false;
+        using var _ = await AcquireImapLockAsync();
         await EnsureConnectedAsync();
         return await MoveUidAsync(uid, target);
     }
@@ -977,6 +1255,7 @@ public sealed class ImapMailBackend : IAsyncDisposable
     /// time, and this may run well after the folder the move happened from was last the active one.</summary>
     public async Task<bool> UndoMoveAsync(MoveUndo move)
     {
+        using var _ = await AcquireImapLockAsync();
         if (!_foldersByMailbox.TryGetValue(move.DestinationMailbox, out var from)
             || !_foldersByMailbox.TryGetValue(move.SourceMailbox, out var to))
             return false;
@@ -1075,9 +1354,12 @@ public sealed class ImapMailBackend : IAsyncDisposable
     /// (a vanished attachment, an unparseable address) — empty if everything went out intact.</summary>
     public async Task<IReadOnlyList<string>> SendAsync(ComposeResult result)
     {
+        // Only the tail (filing a Sent copy) touches _imap, but acquiring for the whole method is
+        // simpler and no real cost — nothing else needs the connection mid-send anyway.
+        using var _ = await AcquireImapLockAsync();
         var (message, warnings) = BuildMessage(result);
 
-        using var smtp = new SmtpClient();
+        using var smtp = new SmtpClient { Timeout = NetworkTimeoutMs };
         var options = _account.SmtpSecurity == SmtpSecurity.SslOnConnect
             ? SecureSocketOptions.SslOnConnect
             : SecureSocketOptions.StartTls;
@@ -1117,6 +1399,7 @@ public sealed class ImapMailBackend : IAsyncDisposable
     /// </summary>
     public async Task<(bool Saved, UniqueId? NewUid)> SaveDraftAsync(ComposeResult result, UniqueId? replacingUid)
     {
+        using var _ = await AcquireImapLockAsync();
         var drafts = await ResolveSpecialAsync("Drafts");
         if (drafts is null)
             return (false, null);
@@ -1152,6 +1435,7 @@ public sealed class ImapMailBackend : IAsyncDisposable
     /// makes a periodic autosave stale, independent of whatever folder is currently open in the UI.</summary>
     public async Task DeleteDraftAsync(UniqueId uid)
     {
+        using var _ = await AcquireImapLockAsync();
         var drafts = await ResolveSpecialAsync("Drafts");
         if (drafts is null)
             return;
@@ -1181,6 +1465,13 @@ public sealed class ImapMailBackend : IAsyncDisposable
             return null;
 
         var uid = new UniqueId(uidValue);
+        // Locked before even reading _cachedUid/_cachedMessage, not just around the re-fetch below:
+        // OpenMessageAsync writes both fields together while holding this same lock, so reading them
+        // unlocked risked a torn read — _cachedUid already the new message's while _cachedMessage was
+        // still the previous one (or vice versa) — if a message was opened while a download from the
+        // previously-open one was still in flight. That silently saved the wrong message's attachment
+        // bytes under the requested filename, with no error surfaced.
+        using var _ = await AcquireImapLockAsync();
         var message = _cachedUid == uid ? _cachedMessage : null;
         if (message is null)
         {

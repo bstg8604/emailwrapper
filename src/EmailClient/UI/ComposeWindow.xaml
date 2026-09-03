@@ -276,11 +276,13 @@
                          there's no reason to hide it again mid-compose. -->
                     <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Top" Margin="0,13,0,0">
                         <TextBlock x:Name="CcToggle" Text="Cc" Foreground="{DynamicResource TextMuted}" FontSize="12"
-                                   VerticalAlignment="Center" Cursor="Hand" MouseLeftButtonUp="CcToggle_Click"/>
+                                   VerticalAlignment="Center" Cursor="Hand" MouseLeftButtonUp="CcToggle_Click"
+                                   ToolTip="Ctrl+Shift+C"/>
                         <TextBlock x:Name="ToggleSeparator" Text="/" Foreground="{DynamicResource BorderStrong}" FontSize="12" Margin="4,0"
                                    VerticalAlignment="Center"/>
                         <TextBlock x:Name="BccToggle" Text="Bcc" Foreground="{DynamicResource TextMuted}" FontSize="12"
-                                   VerticalAlignment="Center" Cursor="Hand" MouseLeftButtonUp="BccToggle_Click"/>
+                                   VerticalAlignment="Center" Cursor="Hand" MouseLeftButtonUp="BccToggle_Click"
+                                   ToolTip="Ctrl+Shift+B"/>
                     </StackPanel>
                 </Grid>
                 <Border Height="1" Background="{DynamicResource SurfaceSunken}"/>
@@ -449,12 +451,12 @@
                     <Border Tag="RichOnly" Style="{StaticResource ToolbarSeparator}"/>
 
                     <Button Tag="RichOnly" Style="{StaticResource IconActionButton}" Click="Link_Click"
-                            ToolTip="Insert link" AutomationProperties.Name="Insert link" Content="&#xE71B;"/>
+                            ToolTip="Insert link (Ctrl+K)" AutomationProperties.Name="Insert link" Content="&#xE71B;"/>
                     <!-- Moved up from the bottom action bar to sit with Link — both are ways of
                          bringing in something from outside the message, the same grouping Apple
                          Mail uses (Address/Attach/Photo together in one row). -->
                     <Button Style="{StaticResource IconActionButton}" Click="AttachButton_Click"
-                            ToolTip="Attach files" AutomationProperties.Name="Attach files" Content="&#xE723;"/>
+                            ToolTip="Attach files (Ctrl+Shift+A)" AutomationProperties.Name="Attach files" Content="&#xE723;"/>
 
                     <Border Tag="RichOnly" Style="{StaticResource ToolbarSeparator}"/>
 
@@ -546,7 +548,7 @@
                              attachments rather than letting WebView2 navigate to the file. -->
                         <wv2:WebView2 x:Name="RichEditor" AllowExternalDrop="False"/>
                         <TextBox x:Name="PlainEditor" Visibility="Collapsed" BorderThickness="0" FontSize="13.5"
-                                 Padding="12" AcceptsReturn="True" TextWrapping="Wrap"
+                                 Padding="12" AcceptsReturn="True" TextWrapping="Wrap" Cursor="IBeam"
                                  VerticalScrollBarVisibility="Auto" SpellCheck.IsEnabled="True"
                                  AutomationProperties.Name="Message body"/>
                     </Grid>
@@ -562,7 +564,7 @@
                         <TextBlock Text="Link to" VerticalAlignment="Center" FontSize="12.5" Foreground="{DynamicResource TextSecondary}"
                                    Margin="0,0,10,0"/>
                         <TextBox x:Name="LinkBox" Width="300" FontSize="12.5" Padding="6,4" VerticalAlignment="Center"
-                                 AutomationProperties.Name="Link address"/>
+                                 Cursor="IBeam" AutomationProperties.Name="Link address"/>
                         <Button Style="{StaticResource TextActionButton}" Margin="8,0,0,0" Content="Insert"
                                 AutomationProperties.Name="Insert link address" Click="InsertLink_Click"/>
                         <Button Style="{StaticResource TextActionButton}" Content="Cancel" Click="CancelLink_Click"/>
@@ -579,8 +581,16 @@
                     <DataTemplate>
                         <Border Background="{DynamicResource SurfaceSunken}" CornerRadius="7" Padding="10,6" Margin="0,0,8,8">
                             <StackPanel Orientation="Horizontal">
-                                <TextBlock Text="&#xE723;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
-                                           FontSize="12" Foreground="{DynamicResource TextSecondary}" VerticalAlignment="Center" Margin="0,0,7,0"/>
+                                <!-- Tinted chip + colored outline mark (PDF red, DOC blue, XLS
+                                     green, …) instead of the same paperclip for every file — see
+                                     AttachmentIconClassifier for the shared color/path mapping the
+                                     reading pane's own attachment chips render from too. -->
+                                <Border Width="22" Height="22" CornerRadius="6" Background="{Binding IconTintHex}"
+                                        VerticalAlignment="Center" Margin="0,0,7,0">
+                                    <Path Data="{Binding IconPathData}" Stretch="Uniform" Width="14" Height="14"
+                                          Stroke="{Binding IconColorHex}" StrokeThickness="1.15"
+                                          StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
+                                </Border>
                                 <TextBlock Text="{Binding Name}" FontSize="12" VerticalAlignment="Center"/>
                                 <TextBlock Text="{Binding Size}" FontSize="11" Foreground="{DynamicResource TextMuted}"
                                            VerticalAlignment="Center" Margin="7,0,0,0"/>
@@ -612,36 +622,22 @@
             <!-- Actions -->
             <Grid Grid.Row="5" Margin="24,12,24,18">
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
 
-                <StackPanel Grid.Column="0" Orientation="Horizontal">
-                    <!-- Apple Mail's "Address" button — a browsable picker of everyone you've
-                         corresponded with, not just the inline type-ahead the To/Cc/Bcc fields
-                         already do on their own. -->
-                    <Button x:Name="ContactsButton" Style="{StaticResource PillButton}" Click="ContactsButton_Click"
-                            Padding="12,8" ToolTip="Contacts" AutomationProperties.Name="Contacts"
-                            FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="14" Content="&#xE77B;"/>
-                    <!-- Attach moved up to the formatting toolbar, next to Link. -->
-                    <Button Style="{StaticResource PillButton}" Click="DiscardButton_Click" Padding="12,8"
-                            ToolTip="Discard" AutomationProperties.Name="Discard"
-                            FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="14" Content="&#xE74D;"/>
-                </StackPanel>
-
                 <!-- Confirms Save Draft actually did something — the button used to close the
                      whole window with zero feedback, which read as "did that even work?" -->
-                <Border x:Name="SavedFeedback" Grid.Column="1" HorizontalAlignment="Center" VerticalAlignment="Center"
+                <Border x:Name="SavedFeedback" Grid.Column="0" HorizontalAlignment="Center" VerticalAlignment="Center"
                         Background="{DynamicResource SuccessSoft}" CornerRadius="6" Padding="12,7"
                         Opacity="0" IsHitTestVisible="False">
                     <TextBlock x:Name="SavedFeedbackText" Text="Saved" FontSize="12" FontWeight="SemiBold"
                                Foreground="{DynamicResource SuccessDeep}"/>
                 </Border>
 
-                <StackPanel Grid.Column="2" Orientation="Horizontal">
+                <StackPanel Grid.Column="1" Orientation="Horizontal">
                     <Button Style="{StaticResource PillButton}" Click="SaveDraftButton_Click"
-                            AutomationProperties.Name="Save draft">
+                            AutomationProperties.Name="Save draft" ToolTip="Save draft (Ctrl+S)">
                         <StackPanel Orientation="Horizontal">
                             <TextBlock Text="&#xE74E;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
                                        FontSize="12" VerticalAlignment="Center" Margin="0,0,7,0"/>
@@ -669,6 +665,27 @@
                             <TextBlock Text="&#xE724;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
                                        FontSize="12" Margin="8,0,0,0" VerticalAlignment="Center"/>
                         </StackPanel>
+                    </Button>
+                    <!-- Gmail's own split-button convention for schedule send — a narrow dropdown
+                         arrow right against Send, rather than a separate full-width button, since
+                         this is a variant of sending, not an equally-weighted alternative action. -->
+                    <Button x:Name="ScheduleSendButton" Width="26" Padding="0" Margin="1,0,0,0"
+                            Background="{DynamicResource ThemeAccent}" Foreground="{DynamicResource SurfaceCard}"
+                            BorderThickness="0" Cursor="Hand" Click="ScheduleSendButton_Click"
+                            ToolTip="Schedule send" AutomationProperties.Name="Schedule send">
+                        <Button.Template>
+                            <ControlTemplate TargetType="Button">
+                                <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="7">
+                                    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
+                                <ControlTemplate.Triggers>
+                                    <Trigger Property="IsMouseOver" Value="True">
+                                        <Setter TargetName="Bd" Property="Opacity" Value="0.88"/>
+                                    </Trigger>
+                                </ControlTemplate.Triggers>
+                            </ControlTemplate>
+                        </Button.Template>
+                        <TextBlock Text="&#xE70D;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="9"/>
                     </Button>
                 </StackPanel>
             </Grid>

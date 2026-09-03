@@ -12,7 +12,7 @@
 ; external dependency left is the WebView2 runtime (checked for below).
 
 #define AppName        "Purplemail"
-#define AppVersion     "1.0.4"
+#define AppVersion     "1.0.14"
 #define AppPublisher   "Purplemail"
 #define AppExe         "Purplemail.exe"
 #define SourceDir      "..\dist\publish"
@@ -40,6 +40,11 @@ OutputBaseFilename=Purplemail-{#AppVersion}-Setup
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
+; A branded gradient banner (generated from the app's own icon) instead of Inno's generic stock
+; wizard graphic — the same treatment every polished installer (Slack, Discord, ...) gives this
+; screen rather than leaving it looking like an unbranded default.
+WizardImageFile=assets\wizard-large.bmp
+WizardSmallImageFile=assets\wizard-small.bmp
 ; Per-user install: no UAC prompt, and it matches the app's per-user settings, DPAPI-encrypted
 ; credentials and HKCU startup entry. A machine-wide install would need elevation for no benefit.
 PrivilegesRequired=lowest
@@ -54,14 +59,17 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional shortcuts:"
-Name: "startupicon"; Description: "Start {#AppName} when I sign in to Windows"; GroupDescription: "Startup:"; Flags: unchecked
+Name: "startupicon"; Description: "Start {#AppName} when I sign in to Windows"; GroupDescription: "Startup:"
 
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"
-Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopicon
+; AppUserModelID must match EmailClient/UI/AppIdentity.cs's AppUserModelId exactly — Windows
+; correlates a running process to a Start Menu shortcut by this string, which is also where a real
+; Windows 11 toast notification's icon/branding is read from when the app isn't running.
+Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"; AppUserModelID: "Purplemail.DesktopApp"
+Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopicon; AppUserModelID: "Purplemail.DesktopApp"
 
 [Registry]
 ; Matches Settings/StartupRegistration.cs exactly — same key, same value name, same --tray flag —
@@ -93,9 +101,25 @@ begin
     RegQueryStringValue(HKCU, 'SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}', 'pv', Value);
 end;
 
+// Same GUID as AppId above (without the escaped braces) — Inno Setup names every install's own
+// uninstall registry entry "{AppId}_is1", written automatically on every install regardless of
+// version, so a prior version's entry is already there (with its own DisplayVersion) before this
+// version's install ever begins.
+const
+  AppUninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{8E4C1F27-6A3B-4D59-9C2E-51A7F0B4D8E3}_is1';
+
 function InitializeSetup(): Boolean;
+var
+  PrevVersion: String;
 begin
   Result := True;
+
+  // Per-user install (PrivilegesRequired=lowest) always writes this under HKCU, never HKLM.
+  if RegQueryStringValue(HKCU, AppUninstallKey, 'DisplayVersion', PrevVersion) then
+    if PrevVersion <> '{#AppVersion}' then
+      MsgBox('You have Purplemail ' + PrevVersion + ' installed.' + #13#10#13#10 +
+             'It will be updated to ' + '{#AppVersion}' + '.', mbInformation, MB_OK);
+
   if not WebView2Installed() then
     if MsgBox('Purplemail needs the Microsoft Edge WebView2 runtime to display messages.' + #13#10#13#10 +
               'It was not found on this PC. You can install Purplemail now and add WebView2 afterwards ' +

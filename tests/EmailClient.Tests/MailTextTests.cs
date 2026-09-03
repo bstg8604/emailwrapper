@@ -1,4 +1,4 @@
-using EmailClient.Automation;
+﻿using EmailClient.Automation;
 using Xunit;
 
 namespace EmailClient.Tests;
@@ -54,6 +54,39 @@ public class MailTextTests
     public void Snippet_ShortText_ReturnedAsIs()
     {
         Assert.Equal("Hello world", MailText.Snippet("<p>Hello world</p>"));
+    }
+
+    [Fact]
+    public void Snippet_NeverSplitsASurrogatePairAtTheCut()
+    {
+        // An astral-plane character (outside the BMP, e.g. this emoji) is two UTF-16 chars —
+        // a raw-index cut landing right between them would leave an orphaned high surrogate
+        // at the end, rendering as a broken glyph instead of the ellipsis reading cleanly.
+        var emoji = "\U0001F600";
+        var html = "<p>" + new string('a', 19) + emoji + "</p>";
+        var snippet = MailText.Snippet(html, maxLength: 20);
+
+        Assert.EndsWith("\u2026", snippet);
+        Assert.False(char.IsSurrogate(snippet[^2]), "no lone surrogate half should sit before the ellipsis");
+    }
+
+    [Fact]
+    public void HtmlToPlainText_QuotedAttributeContainingGreaterThan_DoesNotLeakTagTail()
+    {
+        var html = """<p>Before</p><img alt="1 > 2" src="x.png"><p>After</p>""";
+        var text = MailText.HtmlToPlainText(html);
+
+        Assert.DoesNotContain("src=", text);
+        Assert.DoesNotContain("png", text);
+    }
+
+    [Fact]
+    public void HtmlToPlainText_CollapsesRepeatedNonBreakingSpaces()
+    {
+        var html = "<p>Indented:&nbsp;&nbsp;&nbsp;text</p>";
+        var text = MailText.HtmlToPlainText(html);
+
+        Assert.Equal("Indented: text", text);
     }
 
     [Fact]

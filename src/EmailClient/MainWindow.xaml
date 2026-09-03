@@ -53,52 +53,8 @@
             </Setter>
         </Style>
 
-        <!-- Round icon-only button, used for refresh/star/reply/etc. -->
-        <Style x:Key="IconButton" TargetType="Button">
-            <Setter Property="Width" Value="34"/>
-            <Setter Property="Height" Value="34"/>
-            <Setter Property="Background" Value="Transparent"/>
-            <Setter Property="Foreground" Value="{DynamicResource TextBody}"/>
-            <Setter Property="BorderThickness" Value="0"/>
-            <Setter Property="Cursor" Value="Hand"/>
-            <Setter Property="FontFamily" Value="Segoe Fluent Icons, Segoe MDL2 Assets"/>
-            <Setter Property="FontSize" Value="15"/>
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="Button">
-                        <Grid>
-                            <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="17"/>
-                            <!-- Hover fades an overlay in/out rather than swapping Bd's own Background
-                                 outright — Bd stays free for any programmatic Background change (a
-                                 toggled-active state, say) to keep showing through underneath. -->
-                            <Border x:Name="HoverOverlay" Background="{DynamicResource AccentSoft}" CornerRadius="17"
-                                    Opacity="0" IsHitTestVisible="False"/>
-                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                        </Grid>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Trigger.EnterActions>
-                                    <BeginStoryboard>
-                                        <Storyboard>
-                                            <DoubleAnimation Storyboard.TargetName="HoverOverlay" Storyboard.TargetProperty="Opacity"
-                                                              To="1" Duration="0:0:0.12"/>
-                                        </Storyboard>
-                                    </BeginStoryboard>
-                                </Trigger.EnterActions>
-                                <Trigger.ExitActions>
-                                    <BeginStoryboard>
-                                        <Storyboard>
-                                            <DoubleAnimation Storyboard.TargetName="HoverOverlay" Storyboard.TargetProperty="Opacity"
-                                                              To="0" Duration="0:0:0.12"/>
-                                        </Storyboard>
-                                    </BeginStoryboard>
-                                </Trigger.ExitActions>
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
+        <!-- Round icon-only button (refresh/star/reply/etc.) now lives in Theme.xaml, shared
+             app-wide instead of redeclared per window. -->
 
         <Style x:Key="WindowGlyphButton" TargetType="Button" BasedOn="{StaticResource IconButton}">
             <Setter Property="Width" Value="40"/>
@@ -274,16 +230,35 @@
                 <Button Grid.Column="2" x:Name="SortButton" Content="&#xE71C;" Style="{StaticResource IconButton}"
                         ToolTip="Sort" AutomationProperties.Name="Sort" Click="SortButton_Click" Margin="0,0,12,0"/>
 
-                <Border Grid.Column="3" Background="{DynamicResource SurfaceSunken}" CornerRadius="8" Padding="10,6">
+                <Border Grid.Column="3" x:Name="SearchBoxBorder" Background="{DynamicResource SurfaceSunken}" CornerRadius="8" Padding="10,6">
                     <Grid>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto"/>
                             <ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
                         <TextBlock Text="&#xE721;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Foreground="{DynamicResource TextMuted}" FontSize="12" VerticalAlignment="Center" Margin="0,0,8,0"/>
-                        <TextBox x:Name="SearchBox" Grid.Column="1" Background="Transparent" BorderThickness="0"
+                        <TextBox x:Name="SearchBox" Grid.Column="1" Style="{StaticResource SearchFieldBox}"
+                                 Background="Transparent" BorderThickness="0"
                                  VerticalAlignment="Center" FontSize="13" Tag="Search mail"
-                                 TextChanged="SearchBox_TextChanged" KeyDown="SearchBox_KeyDown"/>
+                                 ToolTip="Operators: from: to: subject: has:attachment is:unread is:read is:starred older_than:7d newer_than:1m larger:5M smaller:1M &quot;quoted phrase&quot;"
+                                 TextChanged="SearchBox_TextChanged" KeyDown="SearchBox_KeyDown"
+                                 GotFocus="SearchBox_GotFocus" LostFocus="SearchBox_LostFocus"/>
+
+                        <!-- A hover tooltip alone meant nobody without a mouse hovering there for a
+                             beat would ever learn this syntax exists — this surfaces the same
+                             operators as a real, clickable menu the moment the box gets focus while
+                             still empty, matching how Gmail's own search dropdown teaches its
+                             operators instead of hiding them behind documentation. -->
+                        <Popup x:Name="SearchHintPopup" PlacementTarget="{Binding ElementName=SearchBoxBorder}"
+                               Placement="Bottom" VerticalOffset="6" StaysOpen="False" AllowsTransparency="True">
+                            <Border Background="{DynamicResource SurfaceCard}" BorderBrush="{DynamicResource Border}"
+                                    BorderThickness="1" CornerRadius="8" Padding="6" MinWidth="260">
+                                <Border.Effect>
+                                    <DropShadowEffect Color="{DynamicResource TextPrimaryColor}" Opacity="0.12" BlurRadius="14" ShadowDepth="2"/>
+                                </Border.Effect>
+                                <StackPanel x:Name="SearchHintList"/>
+                            </Border>
+                        </Popup>
                     </Grid>
                 </Border>
 
@@ -322,6 +297,15 @@
                 </Button>
             </Grid>
         </Border>
+
+        <!-- A live fetch (refresh, folder switch, search) used to give zero feedback beyond the
+             small refresh-glyph button itself — on a slow IMAP round trip that reads as the app
+             doing nothing, not working. Pinned to the toolbar's own bottom edge rather than taking
+             up its own row, so it doesn't reflow anything else when it appears/disappears. -->
+        <ProgressBar Grid.Row="1" x:Name="SyncProgressBar" VerticalAlignment="Bottom" Height="2"
+                     BorderThickness="0" Background="Transparent" Foreground="{DynamicResource ThemeAccent}"
+                     IsIndeterminate="True" Visibility="Collapsed"
+                     AutomationProperties.Name="Syncing"/>
 
         <Grid Grid.Row="2">
             <Grid.ColumnDefinitions>
@@ -374,6 +358,23 @@
                             <TextBlock Grid.Column="1" Text="Drafts" Margin="10,0,0,0" Foreground="{DynamicResource TextSecondary}" FontSize="13" VerticalAlignment="Center"/>
                             <Border Grid.Column="2" x:Name="DraftsBadge" Background="{DynamicResource TextDisabled}" CornerRadius="8" Padding="6,1" VerticalAlignment="Center" Visibility="Collapsed">
                                 <TextBlock x:Name="DraftsCount" Foreground="{DynamicResource SurfaceCard}" FontSize="10.5" FontWeight="SemiBold"/>
+                            </Border>
+                        </Grid>
+                    </Border>
+                    <!-- Not a real IMAP folder — a local queue of "Send Later" messages this app
+                         itself hasn't sent yet (see ScheduledSendStore). Placed right under Drafts,
+                         matching Gmail's own sidebar order for the same two "not sent yet" states. -->
+                    <Border x:Name="FolderScheduled" Style="{StaticResource FolderRow}" MouseLeftButtonUp="FolderScheduled_Click">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="&#xE823;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Foreground="{DynamicResource TextSecondary}" FontSize="14" VerticalAlignment="Center"/>
+                            <TextBlock Grid.Column="1" Text="Scheduled" Margin="10,0,0,0" Foreground="{DynamicResource TextSecondary}" FontSize="13" VerticalAlignment="Center"/>
+                            <Border Grid.Column="2" x:Name="ScheduledBadge" Background="{DynamicResource TextDisabled}" CornerRadius="8" Padding="6,1" VerticalAlignment="Center" Visibility="Collapsed">
+                                <TextBlock x:Name="ScheduledCount" Foreground="{DynamicResource SurfaceCard}" FontSize="10.5" FontWeight="SemiBold"/>
                             </Border>
                         </Grid>
                     </Border>
@@ -579,8 +580,14 @@
                                                      Visibility="{Binding Unread, Converter={StaticResource BoolToVis}}"/>
                                             <TextBlock Text="{Binding Sender}" FontSize="12" Foreground="{DynamicResource TextSecondary}"
                                                        FontWeight="{Binding Unread, Converter={StaticResource UnreadWeight}}"/>
+                                            <!-- Apple Mail's VIP concept — a sender flagged for priority, independent of
+                                                 Starred (which flags one message, not everything from someone). -->
+                                            <TextBlock Text="&#xE735;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="10"
+                                                       Foreground="{DynamicResource Warning}" Margin="5,0,0,0" VerticalAlignment="Center"
+                                                       ToolTip="VIP sender"
+                                                       Visibility="{Binding IsVip, Converter={StaticResource BoolToVis}}"/>
                                             <Border Background="{DynamicResource WarningSoft}" CornerRadius="3" Padding="4,0" Margin="6,0,0,0"
-                                                    VerticalAlignment="Center" ToolTip="This sender is outside your organization"
+                                                    VerticalAlignment="Center" ToolTip="This sender is outside your organisation"
                                                     Visibility="{Binding IsExternalSender, Converter={StaticResource BoolToVis}}">
                                                 <TextBlock Text="External" FontSize="9" FontWeight="SemiBold" Foreground="{DynamicResource WarningDeep}"/>
                                             </Border>
@@ -595,9 +602,21 @@
                                             <TextBlock Text="{Binding Date}" Foreground="{DynamicResource TextMuted}" FontSize="11"/>
                                         </StackPanel>
                                     </Grid>
-                                    <TextBlock Margin="0,3,0,0" Text="{Binding Subject}" FontSize="13" Foreground="{DynamicResource TextPrimary}"
-                                               TextTrimming="CharacterEllipsis"
-                                               FontWeight="{Binding Unread, Converter={StaticResource UnreadWeight}}"/>
+                                    <StackPanel Orientation="Horizontal" Margin="0,3,0,0">
+                                        <TextBlock Text="{Binding Subject}" FontSize="13" Foreground="{DynamicResource TextPrimary}"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   FontWeight="{Binding Unread, Converter={StaticResource UnreadWeight}}"/>
+                                        <!-- Apple Mail's own small thread-count numeral — informational
+                                             only, nothing is hidden or collapsed. This app already
+                                             learned once that grouping by subject alone over-matches
+                                             (two different senders can share a subject), so unlike
+                                             Gmail's collapsed thread rows, this never removes a row
+                                             from the list on that signal — see ConversationKey's own
+                                             comment and InboxRow.ThreadCounts. -->
+                                        <TextBlock Text="{Binding ThreadCount, StringFormat=({0})}" FontSize="11.5"
+                                                   Foreground="{DynamicResource TextMuted}" Margin="6,0,0,0" VerticalAlignment="Center"
+                                                   Visibility="{Binding HasThread, Converter={StaticResource BoolToVis}}"/>
+                                    </StackPanel>
                                     <TextBlock Text="{Binding Snippet}" FontSize="11" Foreground="{DynamicResource TextMuted}"
                                                Margin="0,2,0,0" TextTrimming="CharacterEllipsis"/>
                                 </StackPanel>
@@ -672,6 +691,7 @@
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="*"/>
+                            <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
 
                         <StackPanel Grid.Row="0" Margin="24,18,24,12">
@@ -692,6 +712,13 @@
                                     <Button Content="&#xE72D;" Style="{StaticResource IconButton}" ToolTip="Forward" AutomationProperties.Name="Forward" Click="ForwardButton_Click"/>
                                     <Border Width="1" Height="18" Background="{DynamicResource SurfaceHover}" Margin="6,0" VerticalAlignment="Center"/>
                                     <Button x:Name="MarkUnreadButton" Content="&#xE715;" Style="{StaticResource IconButton}" ToolTip="Mark as unread" AutomationProperties.Name="Mark as unread" Click="MarkUnreadButton_Click"/>
+                                    <!-- Apple Mail's VIP concept — flags this message's sender for
+                                         priority everywhere in the message list, not just this one
+                                         message (see InboxRow.IsVip and the Starred distinction). -->
+                                    <Button x:Name="VipToggleButton" Style="{StaticResource IconButton}"
+                                            AutomationProperties.Name="Toggle VIP sender" Click="VipToggleButton_Click">
+                                        <TextBlock x:Name="VipToggleGlyph" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="14" Text="&#xE734;"/>
+                                    </Button>
                                     <Button Content="&#xE7B8;" Style="{StaticResource IconButton}" ToolTip="Archive" AutomationProperties.Name="Archive" Click="ArchiveButton_Click"/>
                                     <Button x:Name="MoveButton" Content="&#xE8DE;" Style="{StaticResource IconButton}" ToolTip="Move to folder…" AutomationProperties.Name="Move to folder" Click="MoveButton_Click"/>
                                     <Border Width="1" Height="18" Background="{DynamicResource SurfaceHover}" Margin="6,0" VerticalAlignment="Center"/>
@@ -778,6 +805,7 @@
                                             Foreground="{DynamicResource ThemeAccentDeep}" Cursor="Hand" Click="ShowImagesButton_Click"/>
                                 </Grid>
                             </Border>
+
                         </StackPanel>
 
                         <!-- Attachments now render inside each message's own card in the HTML
@@ -788,6 +816,26 @@
                             <TextBlock x:Name="ReadingPaneLoadingOverlay" Text="Loading…" Foreground="#AAAAAA"
                                        Margin="8,8,0,0" Visibility="Collapsed" IsHitTestVisible="False"/>
                         </Grid>
+
+                        <!-- Only ever shown when the sender actually declared RFC 2369
+                             List-Unsubscribe (real newsletters/mailing lists) — never a guess
+                             scraped from body text, matching Gmail's own "Unsubscribe" pill. Sits
+                             below the message body rather than up with the other banners — it's
+                             a low-urgency housekeeping action, not something that needs to compete
+                             with the images-blocked/external-sender warnings for the first thing
+                             you see when a message opens. -->
+                        <Border x:Name="UnsubscribeBar" Grid.Row="3" Background="{DynamicResource SurfaceSunken}" CornerRadius="6"
+                                Margin="24,0,24,16" Padding="10,6" Visibility="Collapsed">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="This sender offers a one-click unsubscribe" FontSize="12" Foreground="{DynamicResource TextSecondary}" VerticalAlignment="Center"/>
+                                <Button Grid.Column="1" Content="Unsubscribe" FontSize="12" Background="Transparent" BorderThickness="0"
+                                        Foreground="{DynamicResource DangerDeep}" Cursor="Hand" Click="UnsubscribeButton_Click"/>
+                            </Grid>
+                        </Border>
                     </Grid>
                 </Border>
             </Grid>

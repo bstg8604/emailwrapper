@@ -1,4 +1,4 @@
-using System.ComponentModel;
+﻿using System.ComponentModel;
 using System.IO;
 using System.Net;
 using System.Text.Json;
@@ -13,7 +13,26 @@ using EmailClient.Automation;
 namespace EmailClient.UI;
 
 /// <summary>A file staged for sending, as the chip row displays it.</summary>
-public sealed record ComposeAttachment(string Path, string Name, string Size);
+public sealed record ComposeAttachment(string Path, string Name, string Size)
+{
+    /// <summary>Computed, not persisted — same classifier the reading pane's own attachment chips
+    /// use, so a PDF gets the same tinted mark whether it's about to be sent or was just received.
+    /// Excluded from JSON so ScheduledSendStore's on-disk queue doesn't carry derived values that
+    /// are cheap to recompute and would just be dead weight in the file.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string IconColorHex => AttachmentIconClassifier.For(Name).ColorHex;
+
+    /// <summary>~14% of IconColorHex, ARGB hex (WPF's Brush string-converter reads "#AARRGGBB"
+    /// directly) — the tinted chip background the mark sits on.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string IconTintHex => "#24" + IconColorHex.TrimStart('#');
+
+    /// <summary>WPF's GeometryConverter parses this the same way the reading pane's HTML parses it
+    /// as an SVG "d" attribute — see AttachmentIconClassifier's own remarks for why one path string
+    /// works as both.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string IconPathData => AttachmentIconClassifier.For(Name).PathData;
+}
 
 public sealed record ComposeResult(
     string To,
@@ -68,13 +87,6 @@ public partial class ComposeWindow : Window
     public Func<string, IReadOnlyList<EmailClient.Mail.ContactEntry>>? SuggestContacts { get; set; }
 
     /// <summary>
-    /// Backs the address-book picker (Apple Mail's "Address" button) — the *full* browsable list,
-    /// as opposed to <see cref="SuggestContacts"/>'s type-ahead matches for a partial query.
-    /// Null or empty on sample data / before the live index has finished building.
-    /// </summary>
-    public Func<IReadOnlyList<EmailClient.Mail.ContactEntry>>? ListAllContacts { get; set; }
-
-    /// <summary>
     /// Wired in by MainWindow (real mailboxes only) — periodically hands the current draft off to
     /// be saved server-side, so a crash or a dropped connection mid-compose doesn't lose everything
     /// typed since the last manual save. Null on sample data, where there's nothing to protect.
@@ -127,7 +139,7 @@ public partial class ComposeWindow : Window
 
         PreviewKeyDown += ComposeWindow_PreviewKeyDown;
         StateChanged += (_, _) =>
-            MaximizeButton.Content = WindowState == WindowState.Maximized ? "" : "";
+            MaximizeButton.Content = WindowState == WindowState.Maximized ? char.ConvertFromUtf32(0xE923) : char.ConvertFromUtf32(0xE922); // ChromeRestore : ChromeMaximize
         Loaded += (_, _) => WindowCorners.Apply(this);
         this.FadeInOnShow();
         Loaded += async (_, _) => await InitialiseEditorAsync();
@@ -169,11 +181,33 @@ public partial class ComposeWindow : Window
         table td, table th { border: 1px solid #ddd; padding: 4px 8px; }
         </style></head>
         <body>
-        <div id="editor" contenteditable="true" spellcheck="true"></div>
+        <!-- A bare contenteditable div carries no accessible identity of its own — a screen reader
+             landing on it announces nothing about what it is or that it accepts multi-line input,
+             unlike a native RichTextBox/NSTextView. role/aria-label/aria-multiline give it the same
+             identity a native rich-text control exposes for free. -->
+        <div id="editor" contenteditable="true" spellcheck="true" role="textbox" aria-multiline="true" aria-label="Message body"></div>
         <script>
         (function() {
             const editor = document.getElementById("editor");
             let pending;
+
+            // Remembers the last real (non-collapsed, in-editor) selection continuously while the
+            // editor still holds it. Any toolbar control that isn't the editor itself — a
+            // ComboBox's dropdown, the colour-picker popup Window — steals host-level focus the
+            // moment it's clicked, and Chromium clears/collapses the DOM selection along with it.
+            // By the time a command actually runs (a swatch clicked, a font-size chosen), the "live"
+            // selection is already gone; ensureSelection below restores this captured one instead of
+            // just collapsing to a caret at the end, which is what silently turned "select text,
+            // change its colour/size/font" into "nothing visibly happens" for all three.
+            let lastEditorSelection = null;
+            document.addEventListener("selectionchange", function() {
+                const selection = window.getSelection();
+                if (selection.rangeCount === 0)
+                    return;
+                const range = selection.getRangeAt(0);
+                if (!range.collapsed && editor.contains(range.commonAncestorContainer))
+                    lastEditorSelection = range.cloneRange();
+            });
             function post() {
                 window.chrome.webview.postMessage(JSON.stringify({
                     html: editor.innerHTML,
@@ -210,10 +244,42 @@ public partial class ComposeWindow : Window
             document.addEventListener("keydown", function(e) { if (e.key === "Shift") shiftDown = true; });
             document.addEventListener("keyup", function(e) { if (e.key === "Shift") shiftDown = false; });
             editor.addEventListener("paste", function(e) {
-                if (!shiftDown) return;
+                if (shiftDown) {
+                    e.preventDefault();
+                    const text = (e.clipboardData || window.clipboardData).getData("text/plain");
+                    document.execCommand("insertText", false, text);
+                    post();
+                    return;
+                }
+
+                // Word/Outlook's clipboard HTML carries a lot of its own baggage — mso-* inline
+                // styles repeating font/margin/line-height on every single run, conditional
+                // comments, empty <o:p> markers — none of which means anything once this is a
+                // plain HTML email. Only intervenes when the clipboard actually looks like it came
+                // from Office (checked below); anything else pastes exactly as it always has,
+                // including a real Excel/Sheets table staying a real table structurally — only the
+                // decorative mso- styling on its cells is what gets dropped, not the rows/columns.
+                const html = (e.clipboardData || window.clipboardData).getData("text/html");
+                if (!html || !/mso-|urn:schemas-microsoft-com:office|<!--\[if\s/i.test(html))
+                    return;
+
                 e.preventDefault();
-                const text = (e.clipboardData || window.clipboardData).getData("text/plain");
-                document.execCommand("insertText", false, text);
+                const container = document.createElement("div");
+                container.innerHTML = html;
+
+                const walker = document.createTreeWalker(container, NodeFilter.SHOW_COMMENT, null);
+                const comments = [];
+                while (walker.nextNode()) comments.push(walker.currentNode);
+                comments.forEach(function(c) { c.remove(); });
+
+                container.querySelectorAll("*").forEach(function(el) {
+                    el.removeAttribute("style");
+                    el.removeAttribute("class");
+                    el.removeAttribute("lang");
+                    if (el.tagName === "O:P") el.remove();
+                });
+
+                document.execCommand("insertHTML", false, container.innerHTML);
                 post();
             });
 
@@ -233,12 +299,20 @@ public partial class ComposeWindow : Window
             // A formatting command silently no-ops if the editor never had a real
             // selection/caret placed in it yet — e.g. picking a font as the very first click
             // after the window opens, with focus still in To/Subject. editor.focus() alone
-            // doesn't guarantee execCommand has anything to act on, so a fallback caret is
-            // placed at the end of the content first.
+            // doesn't guarantee execCommand has anything to act on. Restoring lastEditorSelection
+            // (real text the user actually selected, just before some other control stole focus and
+            // Chromium cleared it) is tried first; only truly having never selected anything at all
+            // falls back to a plain caret at the end of the content.
             function ensureSelection() {
                 const selection = window.getSelection();
                 if (selection.rangeCount > 0 && editor.contains(selection.getRangeAt(0).commonAncestorContainer))
                     return;
+                if (lastEditorSelection) {
+                    selection.removeAllRanges();
+                    selection.addRange(lastEditorSelection);
+                    lastEditorSelection = null;
+                    return;
+                }
                 const range = document.createRange();
                 range.selectNodeContents(editor);
                 range.collapse(false);
@@ -287,16 +361,19 @@ public partial class ComposeWindow : Window
             // host-focused — forcing focus back would work, but a ComboBox closes its own dropdown
             // the moment its item loses focus, which would collapse the picker on the very first
             // hover. Plain DOM/Range manipulation has no such focus requirement, so the preview
-            // wraps the selection in one marker span once and just restyles it on every hover.
+            // wraps the selection in one marker span once and just restyles it on every hover — the
+            // selection it wraps is lastEditorSelection (declared up top), same one ensureSelection
+            // itself falls back to for every other command.
             let previewSpan = null;
 
             function wrapSelectionForPreview() {
-                const selection = window.getSelection();
-                if (selection.rangeCount === 0)
+                const range = lastEditorSelection;
+                if (!range)
                     return null;
-                const range = selection.getRangeAt(0);
-                if (range.collapsed || !editor.contains(range.commonAncestorContainer))
-                    return null;
+                // Consumed, not left standing — reusing a stale Range for some later preview that
+                // never captured a fresh selection of its own would wrap the wrong (or by-then
+                // stale/detached) text.
+                lastEditorSelection = null;
                 const span = document.createElement("span");
                 try {
                     range.surroundContents(span);
@@ -338,16 +415,133 @@ public partial class ComposeWindow : Window
                 editor.focus();
                 post();
             };
+
+            // ---- Table resize: drag a cell's right/bottom edge for column width/row height, or a
+            // table's own bottom-right corner for its overall size. Native contenteditable gives
+            // this for free on <img> but never on <table> — pasted spreadsheet data (see the
+            // border-collapse rule above) had no way to adjust afterward without this.
+            let dragMode = null; // "col" | "row" | "table"
+            let dragCells = null;
+            let dragTable = null;
+            let dragStart = 0;
+            let dragStartSize = 0;
+            const RESIZE_EDGE = 6;
+
+            function tableOf(el) {
+                while (el && el !== editor) {
+                    if (el.tagName === "TABLE") return el;
+                    el = el.parentElement;
+                }
+                return null;
+            }
+            function cellOf(el) {
+                while (el && el !== editor) {
+                    if (el.tagName === "TD" || el.tagName === "TH") return el;
+                    el = el.parentElement;
+                }
+                return null;
+            }
+            function nearTableCorner(e, table) {
+                const r = table.getBoundingClientRect();
+                return Math.abs(e.clientX - r.right) <= RESIZE_EDGE && Math.abs(e.clientY - r.bottom) <= RESIZE_EDGE;
+            }
+
+            editor.addEventListener("mousemove", function(e) {
+                if (dragMode)
+                    return;
+                const table = tableOf(e.target);
+                if (!table) { editor.style.cursor = ""; return; }
+                if (nearTableCorner(e, table)) { editor.style.cursor = "nwse-resize"; return; }
+                const cell = cellOf(e.target);
+                if (!cell) { editor.style.cursor = ""; return; }
+                const r = cell.getBoundingClientRect();
+                if (Math.abs(e.clientX - r.right) <= RESIZE_EDGE)
+                    editor.style.cursor = "col-resize";
+                else if (Math.abs(e.clientY - r.bottom) <= RESIZE_EDGE)
+                    editor.style.cursor = "row-resize";
+                else
+                    editor.style.cursor = "";
+            });
+
+            editor.addEventListener("mousedown", function(e) {
+                const table = tableOf(e.target);
+                if (!table)
+                    return;
+                if (nearTableCorner(e, table)) {
+                    const r = table.getBoundingClientRect();
+                    dragMode = "table";
+                    dragTable = table;
+                    dragStart = { x: e.clientX, y: e.clientY };
+                    dragStartSize = { w: r.width, h: r.height };
+                    e.preventDefault();
+                    return;
+                }
+                const cell = cellOf(e.target);
+                if (!cell)
+                    return;
+                const r = cell.getBoundingClientRect();
+                if (Math.abs(e.clientX - r.right) <= RESIZE_EDGE) {
+                    // Every row's cell at the same column index — a plain grid (no colspan) is the
+                    // common pasted-spreadsheet shape this is built for; a colspan'd table just
+                    // resizes whichever cell happens to share that index, a reasonable fallback.
+                    const idx = cell.cellIndex;
+                    dragCells = Array.from(table.querySelectorAll("tr"))
+                        .map(function(tr) { return tr.cells[idx]; }).filter(Boolean);
+                    dragMode = "col";
+                    dragStart = e.clientX;
+                    dragStartSize = r.width;
+                    e.preventDefault();
+                } else if (Math.abs(e.clientY - r.bottom) <= RESIZE_EDGE) {
+                    dragCells = Array.from(cell.parentElement.cells);
+                    dragMode = "row";
+                    dragStart = e.clientY;
+                    dragStartSize = cell.parentElement.getBoundingClientRect().height;
+                    e.preventDefault();
+                }
+            });
+
+            document.addEventListener("mousemove", function(e) {
+                if (dragMode === "col") {
+                    const w = Math.max(24, dragStartSize + (e.clientX - dragStart));
+                    dragCells.forEach(function(c) { c.style.width = w + "px"; });
+                } else if (dragMode === "row") {
+                    const h = Math.max(16, dragStartSize + (e.clientY - dragStart));
+                    dragCells.forEach(function(c) { c.style.height = h + "px"; });
+                } else if (dragMode === "table") {
+                    dragTable.style.width = Math.max(40, dragStartSize.w + (e.clientX - dragStart.x)) + "px";
+                    dragTable.style.height = Math.max(24, dragStartSize.h + (e.clientY - dragStart.y)) + "px";
+                }
+            });
+
+            document.addEventListener("mouseup", function() {
+                if (!dragMode)
+                    return;
+                dragMode = null;
+                dragCells = null;
+                dragTable = null;
+                post();
+            });
         })();
         </script>
         </body></html>
         """;
 
+    /// <summary>Bounds an awaited WebView2 setup step so a hung/crashed renderer surfaces as a
+    /// (caught, recoverable) TimeoutException instead of leaving InitialiseEditorAsync's caller
+    /// waiting forever — same reasoning as ImapMailBackend's NetworkTimeoutMs, applied here since
+    /// WebView2's own EnsureCoreWebView2Async/NavigationCompleted carry no timeout of their own.</summary>
+    private static async Task WithTimeout(Task task, TimeSpan timeout)
+    {
+        if (await Task.WhenAny(task, Task.Delay(timeout)) != task)
+            throw new TimeoutException("WebView2 didn't finish initializing in time.");
+        await task; // Re-awaited so a real exception from the task itself still propagates as-is.
+    }
+
     private async Task InitialiseEditorAsync()
     {
         try
         {
-            await RichEditor.EnsureCoreWebView2Async();
+            await WithTimeout(RichEditor.EnsureCoreWebView2Async(), TimeSpan.FromSeconds(15));
             RichEditor.CoreWebView2.Settings.AreDefaultContextMenusEnabled = true;
             RichEditor.CoreWebView2.Settings.AreDevToolsEnabled = false;
             RichEditor.CoreWebView2.Settings.IsStatusBarEnabled = false;
@@ -360,7 +554,7 @@ public partial class ComposeWindow : Window
 
             RichEditor.CoreWebView2.NavigationCompleted += OnNavigationCompleted;
             RichEditor.NavigateToString(EditorHtml);
-            await loaded.Task;
+            await WithTimeout(loaded.Task, TimeSpan.FromSeconds(15));
             RichEditor.CoreWebView2.NavigationCompleted -= OnNavigationCompleted;
 
             await RichEditor.CoreWebView2.ExecuteScriptAsync(
@@ -786,6 +980,7 @@ public partial class ComposeWindow : Window
         var hexBox = new System.Windows.Controls.TextBox
         {
             Width = 130, Padding = new Thickness(6, 5, 6, 5), FontSize = 12,
+            Cursor = System.Windows.Input.Cursors.IBeam,
             Text = "", BorderBrush = new SolidColorBrush(System.Windows.Media.Color.FromRgb(0xD5, 0xD5, 0xD5)),
         };
 
@@ -1119,115 +1314,80 @@ public partial class ComposeWindow : Window
         });
     }
 
-    // ---- Contacts / address book -------------------------------------------------------------
-
-    private System.Windows.Controls.Primitives.Popup? _contactsPopup;
-    private System.Windows.Controls.ListBox? _contactsList;
-    private System.Windows.Controls.TextBox? _contactsSearchBox;
-    private IReadOnlyList<EmailClient.Mail.ContactEntry> _allContacts = [];
-
-    private void ContactsButton_Click(object sender, RoutedEventArgs e)
+    /// <summary>
+    /// Reusable window shell for a picker/dropdown that's built once and shown repeatedly (see
+    /// _suggestPopup's own construction comment for the full reasoning) — same visual recipe as
+    /// <see cref="ShowFloatingWindow"/> (a real Window, not a Popup, since this compose window's
+    /// WebView2 strips real transparency from any Popup and turns rounded corners into solid black
+    /// artifacts), but Show()/Hide()-able and with dismiss-on-losing-focus wired in here instead of
+    /// left to the caller.
+    /// </summary>
+    private Window CreateReusableFloatingWindow(UIElement content, double cornerRadius)
     {
-        _allContacts = ListAllContacts?.Invoke() ?? [];
-        if (_allContacts.Count == 0)
+        var win = new Window
         {
-            System.Windows.MessageBox.Show(this,
-                "No contacts yet — this list is built from the people you've actually emailed, " +
-                "and fills in as you send and receive mail.",
-                "No contacts", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
-
-        if (_contactsPopup is null)
-            BuildContactsPopup();
-
-        _contactsSearchBox!.Text = "";
-        _contactsList!.ItemsSource = _allContacts;
-        _contactsPopup!.IsOpen = true;
-        _contactsSearchBox.Focus();
-    }
-
-    private void BuildContactsPopup()
-    {
-        _contactsSearchBox = new System.Windows.Controls.TextBox
-        {
-            Padding = new Thickness(8, 6, 8, 6),
-            FontSize = 12.5,
-            BorderThickness = new Thickness(0, 0, 0, 1),
-            BorderBrush = (System.Windows.Media.Brush)FindResource("BorderSubtle"),
-            Tag = "Search contacts",
-            // WPF only shows the caret cursor automatically over a TextBox's actual content region,
-            // not its Padding — without this, hovering the field's edges (most of its clickable
-            // area, given the 8/6 padding) shows a plain arrow instead of an I-beam.
-            Cursor = System.Windows.Input.Cursors.IBeam,
-        };
-        _contactsSearchBox.TextChanged += (_, _) =>
-        {
-            var query = _contactsSearchBox.Text;
-            _contactsList!.ItemsSource = string.IsNullOrWhiteSpace(query)
-                ? _allContacts
-                : _allContacts.Where(c => c.DisplayName.Contains(query, StringComparison.OrdinalIgnoreCase)
-                    || c.Address.Contains(query, StringComparison.OrdinalIgnoreCase)).ToList();
-        };
-
-        _contactsList = new System.Windows.Controls.ListBox
-        {
-            BorderThickness = new Thickness(0),
-            MaxHeight = 260,
-            // Same avatar-and-two-line row as the type-ahead dropdown (ShowSuggestions) — one
-            // person should look like the same person wherever they're offered from.
-            ItemTemplate = ContactRowTemplate,
-            ItemContainerStyle = ContactItemContainerStyle,
-        };
-        _contactsList.PreviewMouseLeftButtonUp += (_, _) => CommitContactSelection();
-        _contactsList.PreviewKeyDown += (_, e) =>
-        {
-            if (e.Key == Key.Enter)
-                CommitContactSelection();
-        };
-
-        var panel = new StackPanel { Width = 280 };
-        panel.Children.Add(_contactsSearchBox);
-        panel.Children.Add(_contactsList);
-
-        _contactsPopup = new System.Windows.Controls.Primitives.Popup
-        {
-            // See BuildColourPopup's comment — Effect+ClipToBounds on the same element hard-clips
-            // the blurred shadow into a dark ring; splitting them onto two nested Borders is the fix.
-            Child = new Border
+            Topmost = true,
+            WindowStyle = WindowStyle.None,
+            ResizeMode = ResizeMode.NoResize,
+            ShowInTaskbar = false,
+            SizeToContent = SizeToContent.WidthAndHeight,
+            Background = (System.Windows.Media.Brush)FindResource("SurfaceCard"),
+            Content = new Border
             {
-                Effect = new System.Windows.Media.Effects.DropShadowEffect
-                    { Opacity = 0.15, BlurRadius = 16, ShadowDepth = 3 },
-                Child = new Border
-                {
-                    Background = (System.Windows.Media.Brush)FindResource("SurfaceCard"),
-                    BorderBrush = (System.Windows.Media.Brush)FindResource("Border"),
-                    BorderThickness = new Thickness(1),
-                    CornerRadius = new CornerRadius(8),
-                    ClipToBounds = true,
-                    Child = panel,
-                },
+                BorderBrush = (System.Windows.Media.Brush)FindResource("Border"),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(cornerRadius),
+                ClipToBounds = true,
+                Child = content,
             },
-            PlacementTarget = ContactsButton,
-            StaysOpen = false,
         };
-        _contactsPopup.KeepOnScreen();
-        _contactsPopup.AnimateOnOpen();
+        win.Loaded += (_, _) => EmailClient.UI.WindowCorners.Apply(win);
+        // IsVisibleChanged, not Loaded — Loaded only fires the first time this (reused) window is
+        // ever shown, but the pop-in entrance should replay every time Show() reopens it.
+        win.IsVisibleChanged += (_, e) =>
+        {
+            if (e.NewValue is true && win.Content is FrameworkElement fe)
+                fe.PopIn();
+        };
+
+        void SafeClose()
+        {
+            try { win.Hide(); }
+            catch (InvalidOperationException) { /* already closing or already closed */ }
+        }
+        win.Deactivated += (_, _) => SafeClose();
+        Closed += (_, _) =>
+        {
+            try { win.Close(); }
+            catch (InvalidOperationException) { /* already closed */ }
+        };
+
+        return win;
     }
 
-    /// <summary>Appends the picked address into whichever of To/Cc/Bcc was focused last — the
-    /// same "click to add to the recipients you're building" behaviour Apple Mail's own address
-    /// panel has, rather than replacing whatever was already typed there.</summary>
-    private void CommitContactSelection()
+    private void PositionFloatingWindow(Window win, FrameworkElement anchor)
     {
-        if (_contactsList?.SelectedItem is not EmailClient.Mail.ContactEntry contact)
-            return;
+        var topLeft = anchor.PointToScreen(new System.Windows.Point(0, anchor.ActualHeight + 6));
+        var source = PresentationSource.FromVisual(this);
+        var scale = source?.CompositionTarget?.TransformToDevice.M11 ?? 1.0;
+        var left = topLeft.X / scale;
+        var top = topLeft.Y / scale;
 
-        var box = _lastFocusedRecipientBox;
-        box.AddRecipient(contact.DisplayName, contact.Address);
+        // Clamp to whichever screen the anchor is actually on — anchoring near a monitor's
+        // right/bottom edge (e.g. a maximized compose window) otherwise pushes part or all of the
+        // popup off that edge. ActualWidth/Height are 0 before this reused window's very first
+        // layout pass; a reasonable estimate covers that one call; every later reopen has the real
+        // size, since Hide() (not Close()) keeps it laid out between shows.
+        var workArea = System.Windows.Forms.Screen.FromPoint(new System.Drawing.Point((int)topLeft.X, (int)topLeft.Y)).WorkingArea;
+        var widthPx = (win.ActualWidth > 0 ? win.ActualWidth : 260) * scale;
+        var heightPx = (win.ActualHeight > 0 ? win.ActualHeight : 200) * scale;
+        if (topLeft.X + widthPx > workArea.Right)
+            left = (workArea.Right - widthPx) / scale;
+        if (topLeft.Y + heightPx > workArea.Bottom)
+            top = (workArea.Bottom - heightPx) / scale;
 
-        _contactsPopup!.IsOpen = false;
-        box.InputTextBox.Focus();
+        win.Left = left;
+        win.Top = top;
     }
 
     // ---- Emoji ------------------------------------------------------------------------------
@@ -1241,7 +1401,7 @@ public partial class ComposeWindow : Window
         "⚠️", "📌", "📎", "💡", "📅", "⏰", "❤️", "✨",
     ];
 
-    private System.Windows.Controls.Primitives.Popup? _emojiPopup;
+    private Window? _emojiPopup;
 
     private void EmojiButton_Click(object sender, RoutedEventArgs e)
     {
@@ -1280,34 +1440,20 @@ public partial class ComposeWindow : Window
                 grid.Children.Add(button);
             }
 
-            _emojiPopup = new System.Windows.Controls.Primitives.Popup
-            {
-                // See BuildColourPopup's comment for why the shadow and the clipped/rounded
-                // content live on two separate, nested Borders rather than one.
-                Child = new Border
-                {
-                    Effect = new System.Windows.Media.Effects.DropShadowEffect
-                        { Opacity = 0.15, BlurRadius = 16, ShadowDepth = 3 },
-                    Child = new Border
-                    {
-                        Background = System.Windows.Media.Brushes.White,
-                        BorderBrush = new SolidColorBrush(System.Windows.Media.Color.FromRgb(0xE2, 0xDD, 0xF0)),
-                        BorderThickness = new Thickness(1),
-                        CornerRadius = new CornerRadius(8),
-                        ClipToBounds = true,
-                        Child = grid,
-                    },
-                },
-                StaysOpen = false,
-            };
-            _emojiPopup.KeepOnScreen();
-            _emojiPopup.AnimateOnOpen();
+            _emojiPopup = CreateReusableFloatingWindow(grid, cornerRadius: 8);
         }
 
         // Anchored to whatever invoked it (the More-menu item), rather than a fixed toolbar
         // button — emoji now lives in the overflow menu, not the main bar.
-        _emojiPopup.PlacementTarget = sender as System.Windows.UIElement;
-        _emojiPopup.IsOpen = !_emojiPopup.IsOpen;
+        if (_emojiPopup.IsVisible)
+        {
+            _emojiPopup.Hide();
+        }
+        else if (sender is FrameworkElement anchor)
+        {
+            PositionFloatingWindow(_emojiPopup, anchor);
+            _emojiPopup.Show();
+        }
     }
 
     private async void EmojiChoice_Click(object sender, RoutedEventArgs e)
@@ -1315,7 +1461,7 @@ public partial class ComposeWindow : Window
         if (sender is not System.Windows.Controls.Button { Content: string emoji })
             return;
 
-        _emojiPopup!.IsOpen = false;
+        _emojiPopup!.Hide();
         if (_plainTextMode || !_editorReady)
         {
             PlainEditor.SelectedText = emoji;
@@ -1701,24 +1847,18 @@ public partial class ComposeWindow : Window
     private System.Windows.Controls.ListBox? _suggestList;
     private RecipientBox? _suggestTarget;
 
-    // Which recipient field the address-book picker adds a clicked contact to — whichever of
-    // To/Cc/Bcc was focused most recently, defaulting to To before any of them ever were.
-    private RecipientBox _lastFocusedRecipientBox = null!;
-
-    // Built once and shared by both this dropdown and the address-book picker below, so a
-    // contact reads identically wherever it's suggested from.
+    // Built once and reused every time this dropdown reopens, so a contact reads identically
+    // wherever it's suggested from.
     private DataTemplate? _contactRowTemplate;
     private Style? _contactItemContainerStyle;
 
     private void WireRecipientAutocomplete()
     {
-        _lastFocusedRecipientBox = ToBox;
         foreach (var box in new[] { ToBox, CcBox, BccBox })
         {
             box.TextChanged += (_, _) => RecipientInput_TextChanged(box);
             box.InputTextBox.PreviewKeyDown += RecipientBox_PreviewKeyDown;
             box.LostFocus += (_, _) => HideSuggestions();
-            box.GotFocus += (_, _) => _lastFocusedRecipientBox = box;
         }
     }
 
@@ -1884,11 +2024,7 @@ public partial class ComposeWindow : Window
         _suggestList!.ItemsSource = matches;
         _suggestList.SelectedIndex = 0;
 
-        var topLeft = box.InputTextBox.PointToScreen(new System.Windows.Point(0, box.InputTextBox.ActualHeight + 4));
-        var source = PresentationSource.FromVisual(this);
-        var scale = source?.CompositionTarget?.TransformToDevice.M11 ?? 1.0;
-        _suggestPopup.Left = topLeft.X / scale;
-        _suggestPopup.Top = topLeft.Y / scale;
+        PositionFloatingWindow(_suggestPopup, box.InputTextBox);
         _suggestPopup.Show();
     }
 
@@ -1984,9 +2120,37 @@ public partial class ComposeWindow : Window
     // Ctrl+Enter to send and Esc to cancel are standard across Gmail, Outlook, and Apple Mail.
     private void ComposeWindow_PreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
     {
-        if (e.Key == Key.Enter && Keyboard.Modifiers == ModifierKeys.Control)
+        var modifiers = Keyboard.Modifiers;
+
+        // Deliberately no keyboard shortcut for Send — an accidental Ctrl+Enter (a plausible typo
+        // reaching for Ctrl+Shift+Enter, Ctrl+End, or similar) used to send a still-being-drafted
+        // message with no chance to catch it first. Send is a click, on purpose, full stop.
+        if (e.Key == Key.S && modifiers == ModifierKeys.Control)
         {
-            SendButton_Click(sender, e);
+            // The default browser Ctrl+S ("save page") would otherwise fire when focus is inside
+            // the WebView2 editor — this has to win regardless of where focus currently is, same as
+            // Ctrl+Enter above, since "save this draft" is unambiguous no matter what's focused.
+            SaveDraftButton_Click(sender, e);
+            e.Handled = true;
+        }
+        else if (e.Key == Key.K && modifiers == ModifierKeys.Control)
+        {
+            Link_Click(sender, e);
+            e.Handled = true;
+        }
+        else if (e.Key == Key.A && modifiers == (ModifierKeys.Control | ModifierKeys.Shift))
+        {
+            AttachButton_Click(sender, e);
+            e.Handled = true;
+        }
+        else if (e.Key == Key.C && modifiers == (ModifierKeys.Control | ModifierKeys.Shift))
+        {
+            ShowCc();
+            e.Handled = true;
+        }
+        else if (e.Key == Key.B && modifiers == (ModifierKeys.Control | ModifierKeys.Shift))
+        {
+            ShowBcc();
             e.Handled = true;
         }
         else if (e.Key == Key.Escape)
@@ -2051,13 +2215,28 @@ public partial class ComposeWindow : Window
 
     private async void SendButton_Click(object sender, RoutedEventArgs e)
     {
+        if (!await ValidateAndFlushForSendAsync())
+            return;
+
+        // The actual send is driven by MainWindow, after a short undo-send window — this window's
+        // job is just to collect the message and hand it back.
+        Result = BuildResult();
+        Close();
+    }
+
+    /// <summary>Shared by SendButton and every ScheduleSendButton option — required-field checks
+    /// and the "forgot the attachment" nudge apply the same way whether the message goes out now
+    /// or hours from now. Returns false (having already shown whatever dialog explains why) if the
+    /// message isn't ready to hand off.</summary>
+    private async Task<bool> ValidateAndFlushForSendAsync()
+    {
         await FlushEditorAsync();
 
         if (string.IsNullOrWhiteSpace(ToBox.Text))
         {
             System.Windows.MessageBox.Show(this, "Add at least one recipient.", "Missing recipient",
                 MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
+            return false;
         }
 
         // A hard rule, not a nudge like the attachment reminder below — there's no "send anyway".
@@ -2068,24 +2247,72 @@ public partial class ComposeWindow : Window
             System.Windows.MessageBox.Show(this, "Add a subject before sending.", "Missing subject",
                 MessageBoxButton.OK, MessageBoxImage.Warning);
             SubjectBox.Focus();
-            return;
+            return false;
         }
 
         var bodyText = _plainTextMode ? PlainEditor.Text : _bodyText;
         if (!_attachmentReminderDismissed && _attachments.Count == 0 && MentionsAttachment.IsMatch(bodyText))
         {
-            if (System.Windows.MessageBox.Show(this,
+            if (UI.ConfirmDialog.Show(this, "No attachment found",
                     "This message mentions an attachment, but nothing is attached. Send anyway?",
-                    "No attachment found", MessageBoxButton.YesNo, MessageBoxImage.Question,
-                    MessageBoxResult.No) != MessageBoxResult.Yes)
-                return;
+                    warningIcon: true, new UI.ConfirmChoice("Cancel"), new UI.ConfirmChoice("Send anyway")) != "Send anyway")
+                return false;
 
             _attachmentReminderDismissed = true;
         }
 
-        // The actual send is driven by MainWindow, after a short undo-send window — this window's
-        // job is just to collect the message and hand it back.
+        return true;
+    }
+
+    /// <summary>The message actually going out later rather than now — set alongside
+    /// <see cref="Result"/> when a ScheduleSendButton option is chosen; null means "send now" (the
+    /// plain Send button's own path). MainWindow.OnComposeClosed checks this to route to the
+    /// scheduled-send queue instead of the immediate undoable-send path.</summary>
+    public DateTime? ScheduledForUtc { get; private set; }
+
+    private static readonly (string Label, Func<DateTime, DateTime> Compute)[] ScheduleOptions =
+    [
+        ("In 1 hour", now => now.AddHours(1)),
+        ("This evening (6 PM)", now => AtTimeOnOrAfter(now, 18, 0)),
+        ("Tomorrow morning (9 AM)", now => AtTimeOnOrAfter(now.Date.AddDays(1), 9, 0)),
+        ("Monday morning (9 AM)", now => AtTimeOnOrAfter(NextMonday(now.Date), 9, 0)),
+    ];
+
+    /// <summary>Today at the given time if that's still in the future, otherwise tomorrow at that
+    /// time — "this evening" picked at 7 PM should mean tomorrow evening, not a time already past.</summary>
+    private static DateTime AtTimeOnOrAfter(DateTime day, int hour, int minute)
+    {
+        var candidate = day.Date.AddHours(hour).AddMinutes(minute);
+        return candidate > day ? candidate : candidate.AddDays(1);
+    }
+
+    private static DateTime NextMonday(DateTime fromDate)
+    {
+        var daysUntilMonday = ((int)DayOfWeek.Monday - (int)fromDate.DayOfWeek + 7) % 7;
+        return fromDate.AddDays(daysUntilMonday == 0 ? 7 : daysUntilMonday);
+    }
+
+    private void ScheduleSendButton_Click(object sender, RoutedEventArgs e)
+    {
+        var menu = new System.Windows.Controls.ContextMenu { PlacementTarget = ScheduleSendButton };
+        foreach (var (label, compute) in ScheduleOptions)
+        {
+            var item = new System.Windows.Controls.MenuItem { Header = label };
+            item.Click += async (_, _) => await ScheduleSendAsync(compute(DateTime.Now));
+            menu.Items.Add(item);
+        }
+        menu.IsOpen = true;
+    }
+
+    private async Task ScheduleSendAsync(DateTime sendAtLocal)
+    {
+        if (!await ValidateAndFlushForSendAsync())
+            return;
+
+        // Result being non-null is what OnClosing's own guard already treats as "handled, don't ask
+        // about unsaved changes" — matching the plain Send path, which relies on the same check.
         Result = BuildResult();
+        ScheduledForUtc = sendAtLocal.ToUniversalTime();
         Close();
     }
 
@@ -2128,18 +2355,6 @@ public partial class ComposeWindow : Window
                 new System.Windows.Media.Animation.DoubleAnimation(0, TimeSpan.FromMilliseconds(400)));
         };
         _feedbackHideTimer.Start();
-    }
-
-    private void DiscardButton_Click(object sender, RoutedEventArgs e)
-    {
-        if (BuildResult().HasContent
-            && UI.ConfirmDialog.Show(this, "Discard message", "Discard this message? It won't be saved to Drafts.",
-                warningIcon: true, new UI.ConfirmChoice("Cancel"), new UI.ConfirmChoice("Discard", Destructive: true)) != "Discard")
-            return;
-
-        // Discard means discard — the Closed handler must not quietly turn it into a draft.
-        _discarding = true;
-        Close();
     }
 
     private void CancelButton_Click(object sender, RoutedEventArgs e) => Close();
@@ -2187,7 +2402,8 @@ public partial class ComposeWindow : Window
         _autosaveTimer.Tick -= AutosaveTimer_Tick;
         // Not owned by this window (see its own construction comment for why), so it wouldn't
         // otherwise close with this one — left open, Hide()s an orphaned top-level window for the
-        // rest of the process's life instead of actually closing it.
+        // rest of the process's life instead of actually closing it. (_contactsPopup and
+        // _emojiPopup close themselves via CreateReusableFloatingWindow's own Closed hook.)
         _suggestPopup?.Close();
         if (_editorReady)
         {

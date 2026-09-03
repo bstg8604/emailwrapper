@@ -386,7 +386,7 @@ public partial class AccountWindow : Window
             _profileAccount.Password = newPassword;
             _profileAccount.Save();
             PasswordChangeStatusText.Foreground = new SolidColorBrush(Color.FromRgb(0x15, 0x80, 0x3D));
-            PasswordChangeStatusText.Text = "Password updated.";
+            PasswordChangeStatusText.Text = "Password updated";
             NewPasswordBox.Password = "";
             NewPasswordRevealBox.Text = "";
         }
@@ -553,7 +553,7 @@ public partial class AccountWindow : Window
         try
         {
             await backend.ConnectAsync();
-            SetBusy(false, "Connection successful.");
+            SetBusy(false, "Connection successful");
         }
         catch (Exception ex)
         {

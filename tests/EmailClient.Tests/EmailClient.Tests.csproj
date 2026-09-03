@@ -1,7 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net9.0-windows</TargetFramework>
+    <!-- Must be at least as high as the referenced EmailClient project's own TFM (bumped for
+         Microsoft.Toolkit.Uwp.Notifications — see that project's csproj comment). -->
+    <TargetFramework>net9.0-windows10.0.17763.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <IsPackable>false</IsPackable>

@@ -1,5 +1,6 @@
 using System.IO;
 using EmailClient.Diagnostics;
+using Microsoft.Toolkit.Uwp.Notifications;
 using System.Windows;
 using WinForms = System.Windows.Forms;
 
@@ -7,9 +8,12 @@ namespace EmailClient.UI;
 
 /// <summary>
 /// The tray presence: the icon itself, the window's hide/restore behaviour, and the new-mail
-/// notifications. On Windows 10 and 11 a NotifyIcon balloon is rendered by the shell as a real
-/// toast (and lands in the Action Center), so this is a desktop notification rather than the old
-/// XP-style balloon the API name suggests — and it needs no packaged identity or extra dependency.
+/// notifications. New mail is a real Windows 11 toast (via <see cref="ToastContentBuilder"/>) —
+/// the app's own icon, native Fluent card, a proper Action Center entry — rather than the legacy
+/// WinForms balloon-tip API this used to go through, which Windows renders with minimal, dated
+/// styling regardless of anything the app itself controls. Requires <see cref="AppIdentity"/> to
+/// have registered this process's AUMID before the first toast (done once, at app startup) and the
+/// Start Menu shortcut installed with the matching AppUserModelID (see build/Purplemail.iss).
 /// </summary>
 public sealed class TrayIcon : IDisposable
 {
@@ -33,13 +37,6 @@ public sealed class TrayIcon : IDisposable
         set => _restoreTo = value == WindowState.Minimized ? WindowState.Normal : value;
     }
 
-    /// <summary>
-    /// Identifies whatever the current notification is about, so a click can open that message.
-    /// Cleared once consumed — a stale click (the toast expired, the Action Center entry is from an
-    /// hour ago) shouldn't reopen a message the user has since dealt with.
-    /// </summary>
-    private string? _notificationTarget;
-
     public TrayIcon(Window window, string iconPath)
     {
         _window = window;
@@ -62,13 +59,18 @@ public sealed class TrayIcon : IDisposable
             if (e.Button == WinForms.MouseButtons.Left)
                 RestoreFresh();
         };
-        _notifyIcon.BalloonTipClicked += (_, _) =>
+        // Fired from a background thread (and possibly a different process entirely, if the app
+        // wasn't running when the toast was clicked) — must marshal back to the UI thread before
+        // touching _window, same rule as the IMAP IDLE callbacks elsewhere in this app.
+        ToastNotificationManagerCompat.OnActivated += e =>
         {
-            var target = _notificationTarget;
-            _notificationTarget = null;
-            Restore();
-            if (target is not null)
-                NotificationOpened?.Invoke(this, target);
+            var target = string.IsNullOrEmpty(e.Argument) ? null : e.Argument;
+            _window.Dispatcher.BeginInvoke(() =>
+            {
+                Restore();
+                if (target is not null)
+                    NotificationOpened?.Invoke(this, target);
+            });
         };
     }
 
@@ -154,16 +156,29 @@ public sealed class TrayIcon : IDisposable
     }
 
     /// <summary>
-    /// Shows a desktop notification. <paramref name="targetId"/> is the message a click should
-    /// open, if any.
+    /// Shows a real Windows toast notification. <paramref name="targetId"/> is the message a click
+    /// should open, if any — baked into this specific toast's own launch argument rather than
+    /// shared mutable state, so an old toast clicked after a newer one already fired can't reopen
+    /// the wrong message the way a single shared "current target" field would risk.
     /// </summary>
     public void Notify(string title, string text, string? targetId = null)
     {
-        _notificationTarget = targetId;
-        _notifyIcon.ShowBalloonTip(8000, title, text, WinForms.ToolTipIcon.Info);
+        try
+        {
+            new ToastContentBuilder()
+                .AddText(title)
+                .AddText(text)
+                .AddArgument(targetId ?? "")
+                .Show();
+        }
+        catch (Exception ex)
+        {
+            // A toast failing to show (Focus Assist, notifications disabled for the app in Windows
+            // Settings, a first-run AUMID registration hiccup) shouldn't take down the mail-check
+            // that triggered it — the unread badge/tray tooltip still reflect the new mail either way.
+            Log.Warn("Showing the new-mail toast failed", ex);
+        }
     }
-
-    public void ShowBalloon(string title, string text) => Notify(title, text);
 
     public void Dispose()
     {

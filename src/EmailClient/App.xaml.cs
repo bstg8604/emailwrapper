@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Threading.Tasks;
 using System.Windows.Threading;
 using EmailClient.Diagnostics;
@@ -12,6 +13,10 @@ public partial class App : System.Windows.Application
     protected override void OnStartup(System.Windows.StartupEventArgs e)
     {
         base.OnStartup(e);
+
+        // Before anything else — a toast notification shown before this runs would register under
+        // whatever generic identity Windows infers instead of the app's own.
+        UI.AppIdentity.Apply();
 
         Log.WriteHeader();
 
@@ -93,14 +98,32 @@ public partial class App : System.Windows.Application
         // existed — the message box showed a bare ex.Message and the detail was gone forever.
         Log.Error("Unhandled exception on the UI thread", e.Exception);
 
-        var choice = System.Windows.MessageBox.Show(
-            $"Something went wrong: {e.Exception.Message}{Environment.NewLine}{Environment.NewLine}" +
-            "Purplemail is still running. Details have been saved to the log — open it?",
-            "Unexpected error",
-            System.Windows.MessageBoxButton.YesNo,
-            System.Windows.MessageBoxImage.Warning);
+        // No single "current window" for a handler that can fire from anywhere — whichever window
+        // last had focus is the least surprising owner for the dialog to appear on top of.
+        var owner = System.Windows.Application.Current.Windows.OfType<System.Windows.Window>()
+            .FirstOrDefault(w => w.IsActive) ?? System.Windows.Application.Current.MainWindow;
 
-        if (choice == System.Windows.MessageBoxResult.Yes)
+        string? choice;
+        if (owner is not null)
+        {
+            choice = UI.ConfirmDialog.Show(owner, "Unexpected error",
+                $"Something went wrong: {e.Exception.Message}{Environment.NewLine}{Environment.NewLine}" +
+                "Purplemail is still running. Details have been saved to the log — open it?",
+                warningIcon: true, new UI.ConfirmChoice("Dismiss"), new UI.ConfirmChoice("Open log"));
+        }
+        else
+        {
+            // No window to own a themed dialog against (e.g. this fires before any window ever
+            // opened) — falling back to a plain MessageBox here beats letting the exception
+            // handler itself throw trying to show something fancier.
+            choice = System.Windows.MessageBox.Show(
+                $"Something went wrong: {e.Exception.Message}{Environment.NewLine}{Environment.NewLine}" +
+                "Purplemail is still running. Details have been saved to the log — open it?",
+                "Unexpected error", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Warning)
+                == System.Windows.MessageBoxResult.Yes ? "Open log" : null;
+        }
+
+        if (choice == "Open log")
             OpenLog();
 
         e.Handled = true;

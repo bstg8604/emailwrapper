@@ -590,7 +590,7 @@
                                         </WrapPanel>
                                         <wv2:WebView2 x:Name="SignatureEditorView" Height="120"/>
                                         <StackPanel x:Name="SignatureLinkBar" Orientation="Horizontal" Margin="2,4,2,2" Visibility="Collapsed">
-                                            <TextBox x:Name="SignatureLinkBox" Width="200" FontSize="11.5" Padding="5,3"
+                                            <TextBox x:Name="SignatureLinkBox" Width="200" FontSize="11.5" Padding="5,3" Cursor="IBeam"
                                                      KeyDown="SignatureLinkBox_KeyDown" AutomationProperties.Name="Link URL"/>
                                             <Button Content="Insert" FontSize="11" Padding="8,3" Margin="4,0,0,0" Cursor="Hand"
                                                     Background="{DynamicResource ThemeAccent}" Foreground="{DynamicResource SurfaceCard}" BorderThickness="0"

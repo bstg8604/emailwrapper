@@ -26,6 +26,18 @@ namespace EmailClient;
 
 public partial class MainWindow
 {
+    /// <summary>Apple Mail-style thread-count badge data (see InboxRow.ThreadCounts) — recomputed
+    /// on every _messages change rather than once per fetch, so a message arriving mid-session via
+    /// the poll timer or IDLE still gets folded into its thread's count immediately. Deliberately
+    /// informational only: this app already learned once that grouping by subject alone
+    /// over-matches (see ConversationKey's own comment), so this never removes a row from the list,
+    /// only counts how many share a key.</summary>
+    private void UpdateThreadCounts() =>
+        InboxRow.ThreadCounts = _messages
+            .GroupBy(r => r.ConversationKey)
+            .Where(g => !string.IsNullOrEmpty(g.Key))
+            .ToDictionary(g => g.Key, g => g.Count());
+
     // ---- Live data loading --------------------------------------------------------------------
 
     private async Task LoadSpecialMailboxesAsync()
@@ -71,7 +83,16 @@ public partial class MainWindow
     private async Task RefreshMessagesAsync(bool announceNewMail = false)
     {
         if (_refreshInFlight)
+        {
+            // Diagnostic for a live "notification took 1-2 minutes" complaint — if an announcing
+            // refresh (poll/IDLE) ever bails out here because another refresh was already running,
+            // that mail-check is simply skipped for this cycle rather than queued/retried, which
+            // could itself explain a multi-minute delay if refreshes were overlapping often enough.
+            // Remove once that's actually diagnosed.
+            if (announceNewMail)
+                Log.Info("Announcing refresh skipped — another refresh was already in flight");
             return;
+        }
         if (_mail is null)
         {
             ApplyCurrentFolderView();
@@ -79,16 +100,24 @@ public partial class MainWindow
         }
 
         _refreshInFlight = true;
+        SyncProgressBar.Visibility = Visibility.Visible;
         try
         {
             var page = await _mail.ListMessagesAsync();
             _page = page;
 
-            ReplaceMessages(SortRows(page.Rows));
-
-            UpdatePagerBar();
-            UpdateListEmptyState();
-            StatusText.Text = DescribePage(page);
+            // A poll tick or IDLE push landing while search results are on screen must not clobber
+            // them back to the plain folder listing — the very bug this guard fixes: search results
+            // silently reverting to "recent mail" a few seconds to a minute after searching, with no
+            // action from the user. Folder/badge bookkeeping below still runs regardless; only the
+            // visible list and its status line are held back while a search is showing.
+            if (!_serverSearchActive)
+            {
+                ReplaceMessages(SortRows(page.Rows));
+                UpdatePagerBar();
+                UpdateListEmptyState();
+                StatusText.Text = DescribePage(page);
+            }
 
             await RefreshFoldersAsync();
 
@@ -97,7 +126,14 @@ public partial class MainWindow
             // Only the first page: it's what the app opens on, and caching deeper pages would
             // trade a lot of disk for a view the user has to navigate to anyway.
             if (page.Page == 1)
+            {
                 _cache?.SaveRows(_currentFolder, page.Rows);
+                // Inbox only, and only the row list's own folder — not worth quietly prefetching
+                // every folder someone happens to pass through, since Inbox is overwhelmingly where
+                // "can I read this offline" actually comes up.
+                if (_currentFolder == "Inbox")
+                    _ = PrefetchBodiesAsync(page.Rows);
+            }
         }
         catch (SessionExpiredException)
         {
@@ -111,6 +147,54 @@ public partial class MainWindow
         finally
         {
             _refreshInFlight = false;
+            SyncProgressBar.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    private bool _prefetchInFlight;
+
+    /// <summary>
+    /// Best-effort background fetch of whatever's on this page that isn't cached yet, so more of
+    /// the inbox is actually readable offline than just what's been manually clicked into — the
+    /// "proactive caching" half of offline mode, the manually-opened-only cache being the other
+    /// half that already existed. Throttled to a handful of messages with a short pause between
+    /// each: this runs after every refresh (as often as every 60s), and a large unthrottled batch
+    /// would otherwise make every foreground action (opening a message, deleting one) wait behind
+    /// it for the same IMAP connection lock.
+    /// </summary>
+    private async Task PrefetchBodiesAsync(IReadOnlyList<InboxRow> rows)
+    {
+        if (_mail is null || _cache is null || _prefetchInFlight)
+            return;
+
+        const int maxPrefetch = 15;
+        var toFetch = rows.Where(r => _cache.LoadDetail(r.Id) is null).Take(maxPrefetch).ToList();
+        if (toFetch.Count == 0)
+            return;
+
+        _prefetchInFlight = true;
+        try
+        {
+            foreach (var row in toFetch)
+            {
+                try
+                {
+                    var detail = await _mail.OpenMessageAsync(row.Id);
+                    if (detail is not null)
+                        _cache.SaveDetail(row.Id, detail);
+                }
+                catch (Exception)
+                {
+                    // Best-effort — one message that can't be prefetched (deleted server-side
+                    // mid-batch, a transient error) shouldn't stop the rest, and isn't worth
+                    // surfacing to the user at all since nothing they did prompted this.
+                }
+                await Task.Delay(200);
+            }
+        }
+        finally
+        {
+            _prefetchInFlight = false;
         }
     }
 
@@ -133,16 +217,36 @@ public partial class MainWindow
     /// </summary>
     private void AnnounceNewMail(IReadOnlyList<InboxRow> rows, bool announce)
     {
+        // Diagnostic for a live "notification took 1-2 minutes" complaint — every early-return
+        // path below is logged so the next occurrence shows exactly which check held it back
+        // (wrong folder, not yet primed, nothing actually fresh, or notifications disabled) instead
+        // of the log staying silent about an announcing refresh that ran but chose not to notify.
+        // Remove once that's actually diagnosed.
         if (_currentFolder != "Inbox")
+        {
+            if (announce)
+                Log.Info($"Announcing refresh completed, but current folder is '{_currentFolder}', not Inbox — no notification");
             return;
+        }
         if (!announce && _notifier.IsPrimed)
             return;
 
         var fresh = _notifier.Collect(rows);
-        if (!announce || fresh.Count == 0 || !_settings.NotificationsEnabled)
+        if (!announce)
             return;
+        if (fresh.Count == 0)
+        {
+            Log.Info("Announcing refresh completed — no unseen unread mail found");
+            return;
+        }
+        if (!_settings.NotificationsEnabled)
+        {
+            Log.Info($"Announcing refresh found {fresh.Count} fresh message(s), but notifications are disabled in settings");
+            return;
+        }
 
         var (title, text) = NewMailNotifier.Describe(fresh);
+        Log.Info($"Notifying: {title} — {text}");
         _tray?.Notify(title, text, fresh[0].Id);
     }
 
@@ -329,7 +433,6 @@ public partial class MainWindow
     {
         var compose = new ComposeWindow(to, subject, body, cc, bcc, bodyHtml, attachments) { Owner = this };
         compose.SuggestContacts = query => SuggestAllContacts(query);
-        compose.ListAllContacts = ListAllContacts;
         // Live lookup (not a snapshot at open time) so editing signatures while a compose window
         // is already open still offers the current set, not whatever existed a minute ago.
         compose.GetSignatures = () =>
@@ -403,8 +506,18 @@ public partial class MainWindow
 
         if (compose.Result is { } result)
         {
-            BeginUndoableSend(result);
-            // The message is being sent for real now — any autosaved copy in Drafts is stale.
+            if (compose.ScheduledForUtc is { } sendAt && _scheduledSends is not null)
+            {
+                _scheduledSends.Add(result, sendAt);
+                UpdateScheduledBadge();
+                StatusText.Text = $"Scheduled to send {sendAt.ToLocalTime():ddd, MMM d 'at' h:mm tt}";
+            }
+            else
+            {
+                BeginUndoableSend(result);
+            }
+            // The message is being sent for real now (or queued to, which makes the autosaved copy
+            // just as stale) — any autosaved copy in Drafts is no longer needed either way.
             if (autosavedUid is { } sentUid && _mail is not null)
                 _ = _mail.DeleteDraftAsync(sentUid);
             return;
@@ -540,6 +653,79 @@ public partial class MainWindow
         _searchDebounceTimer.Stop();
         await RunFolderSearchAsync();
     }
+
+    /// <summary>Operator, then a one-line plain-English description — shown in the hint popup in
+    /// this order, and also what clicking a row inserts (just the operator half).</summary>
+    private static readonly (string Operator, string Description)[] SearchOperatorHints =
+    [
+        ("from:", "messages from someone"),
+        ("to:", "messages sent to someone"),
+        ("subject:", "words in the subject"),
+        ("has:attachment", "only messages with a file attached"),
+        ("is:unread", "only unread messages"),
+        ("is:starred", "only starred messages"),
+        ("older_than:7d", "older than 7 days (also m, y)"),
+        ("newer_than:1m", "newer than 1 month"),
+        ("larger:5M", "bigger than 5 MB (also K, G)"),
+    ];
+
+    /// <summary>A hover tooltip alone meant nobody without a mouse sitting there for a beat would
+    /// ever learn this syntax exists — this pops the same operators up as a real, clickable list
+    /// the moment the box gets focus while still empty (an active search already speaks for
+    /// itself, so the hint would just be clutter over real results).</summary>
+    private void SearchBox_GotFocus(object sender, RoutedEventArgs e)
+    {
+        if (!string.IsNullOrEmpty(SearchBox.Text))
+            return;
+
+        if (SearchHintList.Children.Count == 0)
+        {
+            foreach (var (op, description) in SearchOperatorHints)
+            {
+                var row = new System.Windows.Controls.Button
+                {
+                    Tag = op,
+                    Padding = new Thickness(8, 6, 8, 6),
+                    HorizontalContentAlignment = System.Windows.HorizontalAlignment.Left,
+                    Background = System.Windows.Media.Brushes.Transparent,
+                    BorderThickness = new Thickness(0),
+                    Cursor = System.Windows.Input.Cursors.Hand,
+                };
+                row.Content = new System.Windows.Controls.StackPanel
+                {
+                    Children =
+                    {
+                        new System.Windows.Controls.TextBlock
+                        {
+                            Text = op, FontSize = 12.5, FontWeight = FontWeights.SemiBold,
+                            Foreground = (System.Windows.Media.Brush)FindResource("TextPrimary"),
+                        },
+                        new System.Windows.Controls.TextBlock
+                        {
+                            Text = description, FontSize = 11,
+                            Foreground = (System.Windows.Media.Brush)FindResource("TextMuted"),
+                        },
+                    },
+                };
+                row.Click += SearchHintRow_Click;
+                SearchHintList.Children.Add(row);
+            }
+        }
+
+        SearchHintPopup.IsOpen = true;
+    }
+
+    private void SearchHintRow_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not System.Windows.Controls.Button { Tag: string op })
+            return;
+        SearchBox.Text = op;
+        SearchBox.CaretIndex = SearchBox.Text.Length;
+        SearchHintPopup.IsOpen = false;
+        SearchBox.Focus();
+    }
+
+    private void SearchBox_LostFocus(object sender, RoutedEventArgs e) => SearchHintPopup.IsOpen = false;
 
     private async Task RunFolderSearchAsync()
     {
@@ -701,7 +887,10 @@ public partial class MainWindow
         if (ids.Count == 0)
             return;
 
-        if (verb == "Deleted" && !ConfirmDelete(ids.Count))
+        // Same reasoning as the single-message path in MainWindow.Compose.cs's RemoveMessageAsync —
+        // a non-permanent bulk delete already gets an Undo toast below, so the modal is reserved
+        // for the one case Undo can't cover: deleting from Trash itself.
+        if (verb == "Deleted" && _currentFolder == "Trash" && !ConfirmDelete(ids.Count))
             return;
 
         if (UseMockData)
@@ -717,6 +906,12 @@ public partial class MainWindow
         }
 
         var done = 0;
+        // One undo per message, not just the last — ConsumeLastMove only ever holds the single
+        // most recent move, so it has to be read right after each id's own liveAction call, before
+        // the next iteration overwrites it. Collecting all of them is what makes a bulk archive/
+        // delete of N messages get the same Undo safety net a single one already had, instead of
+        // silently losing recoverability past the first message the moment a second one moved.
+        var undos = new List<Mail.ImapMailBackend.MoveUndo>();
         try
         {
             foreach (var id in ids)
@@ -725,6 +920,8 @@ public partial class MainWindow
                     continue;
                 applyLocally(id);
                 done++;
+                if (_mail!.ConsumeLastMove() is { } move)
+                    undos.Add(move);
             }
             StatusText.Text = done == ids.Count ? $"{verb} {done}" : $"{verb} {done} of {ids.Count}";
         }
@@ -735,6 +932,22 @@ public partial class MainWindow
         catch (Exception ex)
         {
             StatusText.Text = $"{verb} {done} of {ids.Count} — {ex.Message}";
+        }
+
+        if (undos.Count > 0)
+        {
+            ShowActionUndo(verb, async () =>
+            {
+                var restored = 0;
+                foreach (var move in undos)
+                    if (await _mail!.UndoMoveAsync(move))
+                        restored++;
+                if (restored > 0)
+                    await RefreshMessagesAsync();
+                StatusText.Text = restored == undos.Count
+                    ? $"Undid {restored}"
+                    : $"Undid {restored} of {undos.Count} — the rest may have moved again since";
+            });
         }
 
         ClearSelection();

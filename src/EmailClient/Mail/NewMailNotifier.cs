@@ -107,6 +107,28 @@ public sealed class NewMailNotifier
         return Truncate($"{sender}: {subject}", 90);
     }
 
-    private static string Truncate(string value, int max) =>
-        value.Length <= max ? value : value[..(max - 1)].TrimEnd() + "…";
+    private static string Truncate(string value, int max)
+    {
+        if (value.Length <= max)
+            return value;
+
+        var cut = max - 1;
+        // A raw UTF-16 index can land inside a surrogate pair (any character outside the Basic
+        // Multilingual Plane — emoji, some rarer scripts) or between a Devanagari base consonant and
+        // its combining vowel sign, either of which renders as a corrupted/replacement glyph in the
+        // toast instead of just an unlucky truncation point. Backing off one more character avoids
+        // splitting either.
+        if (cut > 0 && char.IsLowSurrogate(value[cut]))
+            cut--;
+        if (cut > 0 && IsCombiningMark(value[cut]))
+            cut--;
+
+        return value[..cut].TrimEnd() + "…";
+    }
+
+    private static bool IsCombiningMark(char c) =>
+        System.Globalization.CharUnicodeInfo.GetUnicodeCategory(c) is
+            System.Globalization.UnicodeCategory.NonSpacingMark or
+            System.Globalization.UnicodeCategory.SpacingCombiningMark or
+            System.Globalization.UnicodeCategory.EnclosingMark;
 }

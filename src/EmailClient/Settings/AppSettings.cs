@@ -54,6 +54,11 @@ public sealed class AppSettings
 
     public int DefaultSignatureIndex { get; set; }
 
+    /// <summary>Email addresses flagged VIP (Apple Mail's term) — mail from these senders gets a
+    /// visual priority marker in the message list. Kept as plain addresses, not display names,
+    /// since a sender's address is the one thing that doesn't change between messages.</summary>
+    public List<string> VipSenders { get; set; } = new();
+
     /// <summary>
     /// Seconds Send holds a message before it actually goes out, with an "Undo" option in the
     /// snackbar — Gmail calls this "Undo Send". No settings UI exposes this yet; edit settings.json

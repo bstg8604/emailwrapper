@@ -57,6 +57,15 @@ public sealed record InboxRow(
     // itself has no idea what "your own domain" is, so it can't compute this on its own.
     public static string SelfDomain { get; set; } = "";
 
+    /// <summary>Kept in sync with AppSettings.VipSenders by MainWindow (same pattern as
+    /// <see cref="SelfDomain"/>) — VIP status is per-sender-address app settings, not IMAP data, so
+    /// a row can't know it on its own either.</summary>
+    public static HashSet<string> VipSenders { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Apple Mail's VIP concept — a sender flagged for visual priority in the message
+    /// list, independent of Starred (which flags one message, not everything from someone).</summary>
+    public bool IsVip => !string.IsNullOrEmpty(SenderAddress) && VipSenders.Contains(SenderAddress);
+
     /// <summary>True when this row's sender domain doesn't match <see cref="SelfDomain"/> — mirrors
     /// the reading pane's own external-sender check, just against the address kept on the row
     /// instead of a freshly-opened MessageDetail.</summary>
@@ -72,10 +81,38 @@ public sealed record InboxRow(
         }
     }
 
+    /// <summary>Kept in sync by MainWindow.MessageList.cs's UpdateThreadCounts, same pattern as
+    /// <see cref="SelfDomain"/> — how many currently-listed rows share this row's ConversationKey.
+    /// A row can't compute this on its own since it only knows its own subject, not its
+    /// neighbors'.</summary>
+    public static Dictionary<string, int> ThreadCounts { get; set; } = new();
+
+    /// <summary>Apple Mail's small thread-count numeral next to the subject — see the badge's own
+    /// XAML comment for why this is informational only (never hides a row).</summary>
+    public int ThreadCount => ThreadCounts.TryGetValue(ConversationKey, out var c) ? c : 1;
+
+    public bool HasThread => ThreadCount > 1;
+
     // Apple Mail's conversation view groups by subject once reply/forward prefixes are stripped —
     // "Trip to South America", "Re: Trip to South America" and "Fwd: Re: Trip to South America"
     // are all the same conversation. Repeated (not just leading-once) so "Re: Re: X" collapses too.
-    private static readonly Regex ReplyPrefixPattern = new(@"^\s*(re|fw|fwd)\s*:\s*", RegexOptions.IgnoreCase);
+    // Beyond plain English re/fw/fwd: Outlook's own numbered form "Re[2]:"/"Re(2):"; and the other
+    // languages/clients an IIT Bombay inbox plausibly sees mail through — AW (German), SV/VS
+    // (Swedish/Finnish), TR (French transfert), WG (German weitergeleitet, "forwarded"), RIF
+    // (Italian), ODP (Polish). Missing one of these used to leave a real reply's ConversationKey
+    // permanently different from its own thread's — silently dropping it out of the conversation
+    // view rather than threading it, which read as "sometimes mail just doesn't thread right."
+    private static readonly Regex ReplyPrefixPattern =
+        new(@"^\s*(re|fw|fwd|aw|sv|vs|tr|wg|rif|odp)(\s*\[\d+\]|\s*\(\d+\))?\s*:\s*", RegexOptions.IgnoreCase);
+
+    // A leading bracketed-tag strip ("[EXTERNAL] Re: X" -> "X") was tried here and reverted — a
+    // live report of a conversation view showing an unrelated sender's whole mail history pointed
+    // at it (and at the header-based sibling matching in ImapMailBackend.FindConversationSiblingsAsync,
+    // also reverted) as prime suspects: stripping an arbitrary "[...]" wrapper risks collapsing many
+    // of one sender's genuinely-unrelated subjects down to the same remaining text whenever they
+    // share a common tag (a course code, a mailing list name), which is exactly what over-matching
+    // "by sender" would look like. Not restored until there's log evidence of which one actually
+    // caused it (see FindConversationSiblingsAsync's own diagnostic logging).
 
     public string ConversationKey
     {
@@ -117,7 +154,21 @@ public sealed record MessageDetail(
     // reading pane header) — that's wrong once baked into a reply/forward's quote attribution,
     // which is permanent text: "Yesterday" sent today reads as "Yesterday" forever after. This is
     // the raw instant so quote-building can format an absolute date instead.
-    [property: JsonPropertyName("timestamp")] DateTime? Timestamp = null);
+    [property: JsonPropertyName("timestamp")] DateTime? Timestamp = null,
+    // RFC 5322 Message-ID/References headers — the authoritative way real mail clients thread a
+    // conversation, unlike guessing from the subject line (see InboxRow.ConversationKey, which
+    // misses a reply whose subject was hand-edited or that uses a non-English "Re:" equivalent,
+    // and can also wrongly merge two unrelated messages that happen to share a generic subject).
+    // Used as a second, more reliable signal alongside the subject match in
+    // MainWindow.GatherConversationAsync / ImapMailBackend.FindConversationSiblingsAsync.
+    [property: JsonPropertyName("messageId")] string? MessageId = null,
+    [property: JsonPropertyName("references")] IReadOnlyList<string>? References = null,
+    // RFC 2369 List-Unsubscribe — set only when the sender actually declared one (newsletters,
+    // mailing lists), never guessed from body text. UnsubscribeUrl is preferred when a sender
+    // offers both, since it needs no compose step; UnsubscribeMailto is the fallback for senders
+    // who only support the older mailto: form.
+    [property: JsonPropertyName("unsubscribeUrl")] string? UnsubscribeUrl = null,
+    [property: JsonPropertyName("unsubscribeMailto")] string? UnsubscribeMailto = null);
 
 /// <summary>A real calendar invite (RFC 5545 VEVENT) found as a message's text/calendar part.</summary>
 public sealed record CalendarInvite(

@@ -163,15 +163,46 @@ public partial class MainWindow
         }
         catch (Exception ex)
         {
+            Log.Error("Sending a message failed", ex);
+
+            // Offline (or a transient network blip), not a real problem with the message itself —
+            // queued for the same background sender Send Later already uses (due "now" rather than
+            // some future time), so it goes out automatically the moment the connection's back
+            // instead of the user having to notice they're online again and manually retry. A real
+            // rejection (bad address, auth failure) falls through to the reopen-compose path below
+            // instead, since silently retrying that forever would never succeed on its own.
+            if (_mail is not null && _scheduledSends is not null && IsConnectivityException(ex))
+            {
+                _scheduledSends.Add(result, DateTime.UtcNow);
+                UpdateScheduledBadge();
+                StatusText.Text = "You're offline — this will send automatically once you're back online";
+                return;
+            }
+
             // The compose window is already gone by this point (Undo Send closes it immediately),
             // so a failure here used to just lose whatever the user typed. Reopening it with
             // everything intact — the same call Undo itself uses — means nothing's lost; they can
             // fix whatever's wrong (or just retry) and send again.
-            Log.Error("Sending a message failed", ex);
             StatusText.Text = $"Send failed: {MailErrors.Friendly(ex)}";
             OpenCompose(result.To, result.Subject, result.Body, result.Cc, result.Bcc,
                 bodyHtml: result.BodyHtml, attachments: result.Files);
         }
+    }
+
+    /// <summary>True when the exception chain points at connectivity (no network, DNS failure, the
+    /// server just not answering) rather than something the user needs to actually fix — a real
+    /// credentials/TLS rejection must never be silently queued for retry, since retrying it forever
+    /// unattended would never succeed on its own.</summary>
+    private static bool IsConnectivityException(Exception ex)
+    {
+        for (var current = ex; current is not null; current = current.InnerException)
+        {
+            if (current is System.Net.Sockets.SocketException or TimeoutException or OperationCanceledException)
+                return true;
+            if (current is MailKit.Security.AuthenticationException or System.Security.Authentication.AuthenticationException)
+                return false;
+        }
+        return false;
     }
 
 
@@ -196,10 +227,30 @@ public partial class MainWindow
             && !senderDomain.EndsWith("." + ownDomain, StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>True for mail from IIT Bombay's own domain (institute departments, mailing lists,
+    /// notices) — the unsubscribe bar is suppressed for these, since a List-Unsubscribe header from
+    /// an internal IITB list is far more likely to be something you'd regret leaving (a course or
+    /// hostel mailing list) than the marketing/newsletter spam the feature actually targets.</summary>
+    private static bool IsIitbSender(string fromAddress)
+    {
+        var senderDomain = MailText.AddressOnly(fromAddress).Split('@').ElementAtOrDefault(1);
+        if (string.IsNullOrEmpty(senderDomain))
+            return false;
+
+        const string iitb = "iitb.ac.in";
+        return senderDomain.Equals(iitb, StringComparison.OrdinalIgnoreCase)
+            || senderDomain.EndsWith("." + iitb, StringComparison.OrdinalIgnoreCase);
+    }
+
     /// <summary>Keeps InboxRow.SelfDomain in sync so the message list can show the same "external
     /// sender" indicator the reading pane shows, without every row needing to know about accounts.</summary>
     private void UpdateSelfDomain() =>
         InboxRow.SelfDomain = SelfAddress.Split('@').ElementAtOrDefault(1) ?? "";
+
+    /// <summary>Same pattern as <see cref="UpdateSelfDomain"/> — keeps InboxRow.VipSenders in sync
+    /// with the persisted setting, called wherever that setting changes.</summary>
+    private void SyncVipSenders() =>
+        InboxRow.VipSenders = new HashSet<string>(_settings.VipSenders, StringComparer.OrdinalIgnoreCase);
 
     private static string ReplySubject(string subject) =>
         subject.StartsWith("Re:", StringComparison.OrdinalIgnoreCase) ? subject : $"Re: {subject}";
@@ -351,20 +402,25 @@ public partial class MainWindow
         if (_openRow is not { } row)
             return;
 
-        string? source;
+        // Written as raw bytes for a live message, not a decoded-then-re-encoded string — a text
+        // part re-serializes per its own declared charset (often not UTF-8), and forcing a UTF-8
+        // decode on those bytes used to corrupt this view for any such message. Sample data has no
+        // real wire bytes to preserve, so it stays a plain UTF-8 string.
+        byte[]? sourceBytes;
         if (UseMockData)
         {
-            source = _openDetail is { } d
+            var source = _openDetail is { } d
                 ? $"Subject: {d.Subject}\nFrom: {d.From}\nDate: {d.Date}\n\n{d.BodyHtml}"
                 : null;
+            sourceBytes = source is null ? null : System.Text.Encoding.UTF8.GetBytes(source);
         }
         else
         {
-            try { source = await _mail!.GetRawSourceAsync(row.Id); }
-            catch (Exception) { source = null; }
+            try { sourceBytes = await _mail!.GetRawSourceAsync(row.Id); }
+            catch (Exception) { sourceBytes = null; }
         }
 
-        if (source is null)
+        if (sourceBytes is null)
         {
             StatusText.Text = "Couldn't get the message source";
             return;
@@ -373,7 +429,7 @@ public partial class MainWindow
         try
         {
             var path = Path.Combine(Path.GetTempPath(), $"message-source-{Guid.NewGuid():N}.txt");
-            await File.WriteAllTextAsync(path, source);
+            await File.WriteAllBytesAsync(path, sourceBytes);
             Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
         }
         catch (Exception ex)
@@ -388,7 +444,9 @@ public partial class MainWindow
             return;
 
         if (!UseMockData && !await RunLiveAsync(
-                () => _mail!.SetReadAsync(open.Id, false), "Marked as unread", "Couldn't mark as unread"))
+                () => _mail!.SetReadAsync(open.Id, false), "Marked as unread", "Couldn't mark as unread",
+                () => _offlineActions?.Add(OfflineActionKind.MarkUnread, open.Id,
+                    messageIdHeader: _openDetail?.MessageId ?? _cache?.LoadDetail(open.Id)?.MessageId)))
             return;
 
         UpdateRow(open.Id, r => r with { Unread = true });
@@ -473,11 +531,18 @@ public partial class MainWindow
 
     private async Task RemoveMessageAsync(InboxRow row, Func<string, Task<bool>> liveAction, string verb)
     {
-        if (verb == "Deleted" && !ConfirmDelete(1))
+        // Confirming AND offering Undo on the same action is protection twice over for the
+        // ordinary case: a delete outside Trash just moves the message there, and already gets an
+        // Undo toast below (see ConsumeLastMove) the moment it succeeds — Gmail relies on that
+        // alone rather than also interrupting with a modal. The modal is worth keeping only for the
+        // one case Undo can't cover: deleting from Trash itself, which is genuinely permanent.
+        if (verb == "Deleted" && _currentFolder == "Trash" && !ConfirmDelete(1))
             return;
 
         if (!UseMockData && !await RunLiveAsync(
-                () => liveAction(row.Id), verb, $"Couldn't {verb.ToLowerInvariant().TrimEnd('d')} the message"))
+                () => liveAction(row.Id), verb, $"Couldn't {verb.ToLowerInvariant().TrimEnd('d')} the message",
+                () => _offlineActions?.Add(verb == "Deleted" ? OfflineActionKind.Delete : OfflineActionKind.Archive, row.Id,
+                    messageIdHeader: (_openRow?.Id == row.Id ? _openDetail?.MessageId : null) ?? _cache?.LoadDetail(row.Id)?.MessageId)))
             return;
 
         // Set by ArchiveAsync/DeleteAsync when the server told us the message's new UID in its

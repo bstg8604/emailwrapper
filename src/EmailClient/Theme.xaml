@@ -1,5 +1,6 @@
 <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:sys="clr-namespace:System;assembly=System.Runtime">
 
     <!--
     App-wide control restyling. These are implicit styles (TargetType only, no x:Key) so every
@@ -287,6 +288,10 @@
         <Setter Property="BorderBrush" Value="{DynamicResource ThemeBorder}"/>
         <Setter Property="BorderThickness" Value="1"/>
         <Setter Property="Margin" Value="0,0,0,8"/>
+        <!-- WPF only shows the I-beam cursor automatically over a TextBox's actual glyph content,
+             not its Padding — without this, most of every field built from this style (used by
+             nearly every text field in Account settings) showed a plain arrow instead. -->
+        <Setter Property="Cursor" Value="IBeam"/>
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="TextBox">
@@ -304,13 +309,43 @@
                             <TextBlock Text="{TemplateBinding Tag}" Margin="{TemplateBinding Padding}"
                                        Foreground="{DynamicResource TextMuted}" IsHitTestVisible="False"
                                        VerticalAlignment="Center" x:Name="Placeholder" Visibility="Collapsed"/>
-                            <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}"/>
+                            <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}"
+                                          HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Hidden"/>
                         </Grid>
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsFocused" Value="True">
                             <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource ThemeAccent}"/>
                         </Trigger>
+                        <Trigger Property="Text" Value="">
+                            <Setter TargetName="Placeholder" Property="Visibility" Value="Visible"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <!-- Same placeholder-text and I-beam-cursor fix as ThemeDialogField, but flat/transparent — for
+         a search field that already sits inside its own pre-styled Border (background, rounding,
+         a magnifying-glass icon), where ThemeDialogField's own border/background/padding chrome
+         would double up wrong. Used by MainWindow's toolbar search box, which had neither fix. -->
+    <Style x:Key="SearchFieldBox" TargetType="TextBox">
+        <Setter Property="Cursor" Value="IBeam"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="TextBox">
+                    <!-- 3px left inset on both the placeholder and the real caret's own content
+                         area — with zero padding here, the caret sat flush against the very left
+                         edge with no breathing room, reading as sitting on top of the placeholder's
+                         first letter instead of clearly before it. -->
+                    <Grid Background="{TemplateBinding Background}">
+                        <TextBlock Text="{TemplateBinding Tag}" Foreground="{DynamicResource TextMuted}"
+                                   IsHitTestVisible="False" VerticalAlignment="Center" Margin="3,0,0,0"
+                                   x:Name="Placeholder" Visibility="Collapsed"/>
+                        <ScrollViewer x:Name="PART_ContentHost" VerticalAlignment="Center" Margin="3,0,0,0"
+                                      HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Hidden"/>
+                    </Grid>
+                    <ControlTemplate.Triggers>
                         <Trigger Property="Text" Value="">
                             <Setter TargetName="Placeholder" Property="Visibility" Value="Visible"/>
                         </Trigger>
@@ -326,13 +361,18 @@
         <Setter Property="BorderBrush" Value="{DynamicResource ThemeBorder}"/>
         <Setter Property="BorderThickness" Value="1"/>
         <Setter Property="Margin" Value="0,0,0,8"/>
+        <!-- Same fix as ThemeDialogField's own Cursor setter — WPF only shows I-beam over the
+             actual glyph content, not this field's Padding, which otherwise showed a plain arrow
+             over most of every password field built from this style. -->
+        <Setter Property="Cursor" Value="IBeam"/>
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="PasswordBox">
                     <Border x:Name="Bd" Background="{TemplateBinding Background}"
                             BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"
                             CornerRadius="7" SnapsToDevicePixels="True">
-                        <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}"/>
+                        <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}"
+                                      HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Hidden"/>
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsFocused" Value="True">
@@ -367,5 +407,66 @@
             </Setter.Value>
         </Setter>
     </Style>
+
+    <!-- Round icon-only button — refresh/star/reply/archive/etc. everywhere in the app body use
+         this one shared style (moved here from MainWindow.xaml, its only user until now) rather
+         than each window growing its own near-identical copy. Window-chrome caption buttons
+         (minimize/maximize/close) and the compose formatting toolbar's bordered-square buttons are
+         deliberately NOT folded into this — they're different visual roles (chrome vs. body,
+         Word-style outlined toolbar vs. flat hover icon), not accidental duplicates of this one. -->
+    <Style x:Key="IconButton" TargetType="Button">
+        <Setter Property="Width" Value="34"/>
+        <Setter Property="Height" Value="34"/>
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="Foreground" Value="{DynamicResource TextBody}"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="FontFamily" Value="Segoe Fluent Icons, Segoe MDL2 Assets"/>
+        <Setter Property="FontSize" Value="15"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Grid>
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="17"/>
+                        <!-- Hover fades an overlay in/out rather than swapping Bd's own Background
+                             outright — Bd stays free for any programmatic Background change (a
+                             toggled-active state, say) to keep showing through underneath. -->
+                        <Border x:Name="HoverOverlay" Background="{DynamicResource AccentSoft}" CornerRadius="17"
+                                Opacity="0" IsHitTestVisible="False"/>
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Trigger.EnterActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="HoverOverlay" Storyboard.TargetProperty="Opacity"
+                                                          To="1" Duration="0:0:0.12"/>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.EnterActions>
+                            <Trigger.ExitActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="HoverOverlay" Storyboard.TargetProperty="Opacity"
+                                                          To="0" Duration="0:0:0.12"/>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.ExitActions>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- A small named type scale, additive alongside the many literal FontSize values still
+         scattered through each window — those aren't force-migrated in one sweep (too large a
+         mechanical change to make blind, without a way to visually verify every window afterward),
+         but new/changed UI should reach for these instead of another one-off literal. -->
+    <sys:Double x:Key="FontSizeCaption">11</sys:Double>
+    <sys:Double x:Key="FontSizeBody">13</sys:Double>
+    <sys:Double x:Key="FontSizeBodyLarge">14.5</sys:Double>
+    <sys:Double x:Key="FontSizeTitle">19</sys:Double>
 
 </ResourceDictionary>

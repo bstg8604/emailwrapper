@@ -297,9 +297,14 @@ public partial class MainWindow
 
     /// <summary>
     /// Runs one live backend action with the error handling every call site needs: an expired
-    /// session reads as a sign-in prompt rather than a generic failure.
+    /// session reads as a sign-in prompt rather than a generic failure. When <paramref name="queueOffline"/>
+    /// is given and the failure looks like connectivity (not a real rejection — see
+    /// IsConnectivityException in MainWindow.Compose.cs), the action is queued for replay instead of
+    /// just failing, and this reports success anyway so the caller applies its optimistic local
+    /// update (row removed, unread dot changed, etc.) exactly as if the server had confirmed it.
     /// </summary>
-    private async Task<bool> RunLiveAsync(Func<Task<bool>> action, string success, string failure)
+    private async Task<bool> RunLiveAsync(
+        Func<Task<bool>> action, string success, string failure, Action? queueOffline = null)
     {
         try
         {
@@ -318,6 +323,12 @@ public partial class MainWindow
         }
         catch (Exception ex)
         {
+            if (queueOffline is not null && IsConnectivityException(ex))
+            {
+                queueOffline();
+                StatusText.Text = $"{success} — you're offline, this will sync once you're back online";
+                return true;
+            }
             StatusText.Text = $"{failure}: {ex.Message}";
             return false;
         }
@@ -489,7 +500,9 @@ public partial class MainWindow
         if (!UseMockData && !await RunLiveAsync(
                 () => _mail!.SetReadAsync(row.Id, !unread),
                 unread ? "Marked as unread" : "Marked as read",
-                unread ? "Couldn't mark as unread" : "Couldn't mark as read"))
+                unread ? "Couldn't mark as unread" : "Couldn't mark as read",
+                () => _offlineActions?.Add(unread ? OfflineActionKind.MarkUnread : OfflineActionKind.MarkRead, row.Id,
+                    messageIdHeader: _cache?.LoadDetail(row.Id)?.MessageId)))
             return;
 
         UpdateRow(row.Id, r => r with { Unread = unread });
@@ -580,6 +593,7 @@ public partial class MainWindow
         }
 
         var moved = 0;
+        var attempted = 0;
         // Only the single-message case gets an Undo offer — ConsumeLastMove only ever holds the
         // *most recent* move, so a bulk move would need to track one MoveUndo per message to undo
         // the whole batch; not worth the extra bookkeeping for how rarely "move" is used in bulk.
@@ -588,6 +602,7 @@ public partial class MainWindow
         {
             foreach (var id in ids)
             {
+                attempted++;
                 if (!await _mail!.MoveToFolderAsync(id, mailbox))
                     continue;
                 undo = ids.Count == 1 ? _mail.ConsumeLastMove() : null;
@@ -599,6 +614,20 @@ public partial class MainWindow
         catch (SessionExpiredException)
         {
             StatusText.Text = "Signed out — sign in again to continue";
+        }
+        catch (Exception ex) when (IsConnectivityException(ex))
+        {
+            // Whatever didn't move yet gets queued for replay; anything already moved above stays
+            // moved (RemoveMessageEverywhere already ran for those, so re-queueing them would just
+            // move them a second time once back online).
+            foreach (var id in ids.Skip(attempted - 1))
+            {
+                _offlineActions?.Add(OfflineActionKind.Move, id, mailbox,
+                    messageIdHeader: (_openRow?.Id == id ? _openDetail?.MessageId : null) ?? _cache?.LoadDetail(id)?.MessageId);
+                RemoveMessageEverywhere(id);
+                moved++;
+            }
+            StatusText.Text = $"Moved {moved} to {label} — you're offline, this will sync once you're back online";
         }
         catch (Exception ex)
         {

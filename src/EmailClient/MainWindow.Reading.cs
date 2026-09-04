@@ -86,6 +86,9 @@ public partial class MainWindow
         .qaddr { color: inherit; text-decoration: none; }
         .qaddr:hover { text-decoration: underline; }
         .qcard .qdate { flex: none; font-size: 11px; color: #a3a3ab; padding-top: 2px; white-space: nowrap; }
+        .qunread { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #6d28d9;
+          margin-right: 6px; vertical-align: middle; }
+        .qstar { color: #d4a017; font-size: 12px; margin-right: 5px; vertical-align: middle; }
         .qcard .qbody { padding: 14px; color: #333; }
         .qcard blockquote { border: none; margin: 0; padding: 0; }
         .qattachments { display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
@@ -148,30 +151,13 @@ public partial class MainWindow
     // same message, swallowing the sender's own new text as if it were quoted history. A real
     // attribution is always one short inline run of text, never spanning a block boundary — inline
     // tags like the mailto <a> above are fine to cross, a paragraph/div break is not.
-    private static readonly Regex AttributedQuote = new(
-        "(?:</?(?:p|div|br)\\b[^>]*>\\s*){0,6}(On (?:(?!wrote:)(?!</?(?:div|p|br)\\b).)*?wrote:)(?:\\s*</?(?:p|div|br)\\b[^>]*>){0,6}\\s*<blockquote\\b[^>]*>((?:(?!</?blockquote\\b).)*)</blockquote>",
-        RegexOptions.IgnoreCase | RegexOptions.Singleline);
-
-    // The other convention: the attribution line as the blockquote's own first paragraph
-    // (<blockquote><p>On ... wrote:</p>...</blockquote>) rather than preceding it — what a raw
-    // IMAP reply chain typically looks like, as opposed to this app's own BuildReplyBodyHtml.
-    private static readonly Regex AttributedQuoteInside = new(
-        "<blockquote\\b[^>]*>\\s*(?:</?(?:p|div|br)\\b[^>]*>\\s*){0,6}(On (?:(?!wrote:)(?!</?(?:div|p|br)\\b).)*?wrote:)(?:\\s*</?(?:p|div|br)\\b[^>]*>){0,6}((?:(?!</?blockquote\\b).)*)</blockquote>",
-        RegexOptions.IgnoreCase | RegexOptions.Singleline);
-
-    /// <summary>
-    /// Turns a flat "quoted history" body — the nested blockquotes an IMAP reply chain (or this
-    /// app's own reply/forward) accumulates — into Apple Mail-style separated cards: each earlier
-    /// message becomes its own bordered, shadowed card with the "On ... wrote:" line as a header
-    /// strip, fully visible rather than collapsed — the same always-expanded, clearly-bounded look
-    /// Apple Mail's conversation view uses, just without needing per-message metadata this app
-    /// doesn't have (each "message" here is really one HTML blob with quoted history baked in, not
-    /// separate stored messages).
-    /// </summary>
     // The other common forward convention (Roundcube/Outlook-style): a dashed marker line
     // ("-------- Original Message --------" / "---------- Forwarded message ----------") followed
     // by labeled Subject/Date/From/To/Cc header lines and then the forwarded body, with no
-    // blockquote at all — so AttributedQuote/AttributedQuoteInside never match it. Whatever follows
+    // blockquote at all. This is the one piece still worth a text-pattern check rather than DOM
+    // structure — there's no equivalent tag the way <blockquote> is the structural marker for a
+    // quote — but it's a narrow, specific phrase (unlike "On ... wrote:", which varies by locale
+    // and client), so it's a much smaller reliability risk than what it replaced. Whatever follows
     // the marker is everything there is (a forward is always the last thing in the message), so
     // this matches greedily to the end rather than needing its own closing delimiter.
     private static readonly Regex ForwardMarker = new(
@@ -183,58 +169,133 @@ public partial class MainWindow
     // id and cross-wire each other's expand/collapse state.
     private static int _quoteToggleSeq;
 
+    /// <summary>
+    /// Finds and folds/strips a message's own trailing quoted history — the flat "quoted history"
+    /// an IMAP reply chain (or this app's own reply/forward) accumulates — so what's left reads as
+    /// this message's own new content, Apple Mail-style.
+    ///
+    /// Boundary detection is a real DOM query (AngleSharp, the same engine HtmlSanitizer is built
+    /// on) against the actual &lt;blockquote&gt; structure, not a regex matching an English
+    /// "On ... wrote:" attribution line the way an earlier version of this method did. That text
+    /// match only ever worked for exactly that phrasing; a lot of real mail doesn't use it —
+    /// different locales ("Le ... a écrit :" and similar), Gmail's own gmail_quote wrapper, IITB
+    /// webmail's own formatting, or simply no attribution line at all. When it didn't match, the
+    /// message's raw, un-folded &lt;blockquote&gt; — which is what a real reply chain actually is,
+    /// one reply's blockquote nested inside the previous reply's, going back through the whole
+    /// thread — stayed fully visible. For a multi-message conversation that's both a duplicate of
+    /// what a sibling card already shows in full, and, visually, genuinely nested boxes inside
+    /// boxes from that same nested-blockquote structure — not the flat, separate-card look Apple
+    /// Mail's own conversation view has. &lt;blockquote&gt; itself, regardless of what precedes it
+    /// or in what language, is the one structural signal virtually every mail client actually uses
+    /// for quoted content, which is what makes a DOM query for it reliable where text-matching an
+    /// attribution phrase never fully could be.
+    /// </summary>
     private static string SeparateQuotedThread(string html, bool suppressNestedQuotes = false)
     {
-        string previous;
-        do
-        {
-            previous = html;
-            html = AttributedQuote.Replace(html, m =>
-                $"<div class=\"qcard\"><div class=\"qhead\">{m.Groups[1].Value}</div>"
-                + $"<div class=\"qbody\">{m.Groups[2].Value}</div></div>");
-            html = AttributedQuoteInside.Replace(html, m =>
-                $"<div class=\"qcard\"><div class=\"qhead\">{m.Groups[1].Value}</div>"
-                + $"<div class=\"qbody\">{m.Groups[2].Value}</div></div>");
-        } while (html != previous);
+        if (string.IsNullOrWhiteSpace(html))
+            return html;
 
         var forward = ForwardMarker.Match(html);
-        // Only hoist a forward marker that's still at the top level — one nested inside a quote
-        // that AttributedQuote already turned into its own qcard above is a different case: "match
-        // to end of string" would swallow that qcard's own closing tags into the new one, corrupting
-        // both. Left alone, it just renders as ordinary nested content inside the existing qcard —
-        // still folded under the same collapse toggle, so nothing is lost, just not double-carded.
-        if (forward.Success && !html[..forward.Index].Contains("<div class=\"qcard\">", StringComparison.Ordinal))
+        if (forward.Success)
         {
             html = html[..forward.Index]
                 + $"<div class=\"qcard\"><div class=\"qhead\">Forwarded message</div>"
                 + $"<div class=\"qbody\">{forward.Groups[1].Value}</div></div>";
         }
 
-        // Everything from the first quote card to the end of the message IS the quoted history —
-        // nothing meaningful ever follows it in a normal reply/forward — so folding from there
-        // onward is enough, without needing to track each nesting level separately.
-        var firstQuote = html.IndexOf("<div class=\"qcard\">", StringComparison.Ordinal);
-        if (firstQuote >= 0)
+        try
         {
+            var parser = new AngleSharp.Html.Parser.HtmlParser();
+            var document = parser.ParseDocument("<!doctype html><html><body></body></html>");
+            var body = document.Body!;
+            body.InnerHtml = html;
+
+            // Outlook's own quote convention is completely different from blockquote — no wrapping
+            // tag at all, just a plain <hr>, then a paragraph whose first line is a bold "From:"
+            // label followed by Sent/To/Cc/Subject lines. A live report showed exactly this: the
+            // quoted original stayed fully visible (no blockquote for the earlier check to find),
+            // duplicating the real sibling card the corrected header-based threading now correctly
+            // shows below it.
+            static bool IsOutlookHeaderBlock(AngleSharp.Dom.IElement el)
+            {
+                var firstChild = el.Children.FirstOrDefault();
+                if (firstChild is null || (firstChild.TagName != "B" && firstChild.TagName != "STRONG"))
+                    return false;
+                return firstChild.TextContent.Trim().TrimEnd(':').Equals("From", StringComparison.OrdinalIgnoreCase);
+            }
+
+            // The first real quote marker anywhere in the message — a <blockquote> (the
+            // near-universal convention), Gmail's own gmail_quote wrapper class, or Outlook's own
+            // <hr>/"From:" header block above — found via a genuine document-order scan, not text
+            // matching. Acted on at its own immediate parent, not walked up to a body-level
+            // ancestor — some real messages wrap the whole thing (the sender's own new text AND the
+            // quote) in one shared outer div, where walking up would treat that whole div as the
+            // boundary and remove the new content along with the quote it happens to share a
+            // wrapper with. Only the marker node and whatever comes after it within its own actual
+            // parent gets folded/removed; an attribution line sitting as a *preceding* sibling
+            // (common) is left visible, same as before.
+            //
+            // A match inside .qsig — a signature this app itself inserted (see SignatureHtml's own
+            // comment) — is skipped: plenty of signature designs use a <blockquote> purely for a
+            // decorative left-indent, nothing to do with quoting, and folding part of someone's own
+            // signature behind a "•••" toggle (a real live report) is exactly what matching it here
+            // caused.
+            var boundary = body.QuerySelectorAll("*")
+                .Where(el => el.Closest(".qsig") is null)
+                .FirstOrDefault(el => el.Matches("blockquote, .gmail_quote, .qcard, hr") || IsOutlookHeaderBlock(el));
+            if (boundary is null)
+                return html; // nothing to fold/strip — the ForwardMarker-adjusted html, unchanged
+
             if (suppressNestedQuotes)
             {
                 // A sibling message elsewhere in this same conversation already shows this exact
                 // content as its own real card — including it again here, even collapsed behind a
                 // toggle, is a guaranteed duplicate rather than a possible one, so it's dropped
                 // entirely instead of folded.
-                html = html[..firstQuote];
+                var node = (AngleSharp.Dom.INode)boundary;
+                while (node is not null)
+                {
+                    var next = node.NextSibling;
+                    node.Parent?.RemoveChild(node);
+                    node = next!;
+                }
             }
             else
             {
                 var toggleId = $"qtoggle{System.Threading.Interlocked.Increment(ref _quoteToggleSeq)}";
-                html = html[..firstQuote]
-                    + $"""<input type="checkbox" id="{toggleId}" class="qtoggle-cb">"""
-                    + $"""<label for="{toggleId}" class="qtoggle-label">&#8226;&#8226;&#8226;</label>"""
-                    + $"""<div class="qtoggle-content">{html[firstQuote..]}</div>""";
-            }
-        }
+                var toggleContent = document.CreateElement("div");
+                toggleContent.ClassName = "qtoggle-content";
+                boundary.Parent!.InsertBefore(toggleContent, boundary);
 
-        return html;
+                // Move the boundary and everything after it into the new wrapper — AppendChild
+                // relocates a node already in the document rather than cloning it, so this is a
+                // real move, not a duplicate.
+                var node = (AngleSharp.Dom.INode)boundary;
+                while (node is not null)
+                {
+                    var next = node.NextSibling;
+                    toggleContent.AppendChild(node);
+                    node = next!;
+                }
+
+                var checkbox = document.CreateElement("input");
+                checkbox.SetAttribute("type", "checkbox");
+                checkbox.Id = toggleId;
+                checkbox.ClassName = "qtoggle-cb";
+                var label = document.CreateElement("label");
+                label.SetAttribute("for", toggleId);
+                label.ClassName = "qtoggle-label";
+                label.InnerHtml = "&#8226;&#8226;&#8226;";
+                toggleContent.Parent!.InsertBefore(label, toggleContent);
+                toggleContent.Parent!.InsertBefore(checkbox, label);
+            }
+
+            return body.InnerHtml;
+        }
+        catch (Exception)
+        {
+            return html; // best-effort — worst case, this message's quote just isn't folded/stripped
+        }
     }
 
     private static readonly Regex RemoteImageSrc =
@@ -274,7 +335,17 @@ public partial class MainWindow
     /// </summary>
     private void ConfigureReadingPane()
     {
+        // WrapHtml's own "color-scheme: light" + white background only takes effect once its CSS
+        // has actually painted — before that (and for whatever the control draws while idle,
+        // between navigations, or if a paint stalls) it falls back to its own native default, which
+        // follows the OS theme. On a dark-mode Windows PC that default is black, and a reading pane
+        // that's solid black until content paints is indistinguishable from one that's stuck. This
+        // removes the OS theme as a factor entirely instead of relying on the page's own CSS to
+        // race it every time.
+        ReadingPane.DefaultBackgroundColor = System.Drawing.Color.White;
+
         var core = ReadingPane.CoreWebView2;
+        core.Profile.PreferredColorScheme = Microsoft.Web.WebView2.Core.CoreWebView2PreferredColorScheme.Light;
         core.Settings.IsScriptEnabled = false;
         core.Settings.AreDevToolsEnabled = false;
         core.Settings.IsStatusBarEnabled = false;
@@ -549,8 +620,40 @@ public partial class MainWindow
     /// stream-based navigation API to fall back to here, so this writes the content to a temp
     /// .html file and navigates there instead — a real file has no such size limit.
     /// </summary>
+    /// <summary>
+    /// Re-parses the fully assembled document and serializes it back out — a real DOM round trip
+    /// (AngleSharp, the same engine HtmlSanitizer is built on), not another regex pass. This is
+    /// belt-and-suspenders structural well-formedness, not security sanitization (every message
+    /// body in here already went through BodySanitizer before assembly): the conversation view
+    /// builds its multi-card markup by regex-matching quote boundaries and string-concatenating the
+    /// pieces back together (see SeparateQuotedThread), and a regex match on real-world HTML can
+    /// capture a span that isn't itself perfectly balanced — an unclosed tag surviving into the
+    /// assembled string doesn't error, it just silently swallows every sibling .qcard appended
+    /// after it into the browser's own auto-correction of that unclosed tag, which is exactly what
+    /// showed up as message cards nesting inside one another instead of stacking as separate,
+    /// visually flat cards the way Apple Mail's own conversation view does. A DOM round trip can't
+    /// leave anything unbalanced — the parser closes whatever the input left open, the same way a
+    /// browser's own parser would, just before that auto-correction has a chance to nest a sibling
+    /// under it.
+    /// </summary>
+    private static string BalanceHtmlDocument(string html)
+    {
+        try
+        {
+            var document = new AngleSharp.Html.Parser.HtmlParser().ParseDocument(html);
+            using var writer = new StringWriter();
+            document.ToHtml(writer, AngleSharp.Html.HtmlMarkupFormatter.Instance);
+            return writer.ToString();
+        }
+        catch (Exception)
+        {
+            return html; // best-effort — worst case, the pre-existing (possibly unbalanced) output
+        }
+    }
+
     private void NavigateReadingPane(string html)
     {
+        html = BalanceHtmlDocument(html);
         try
         {
             ReadingPane.NavigateToString(html);
@@ -577,6 +680,31 @@ public partial class MainWindow
     // selected — without this, clicking through messages quickly could show mail B's content
     // arriving late and stomping over mail C's, which had already loaded and rendered correctly.
     private int _openRequestSeq;
+
+    // Cancels whatever background IMAP work (right now, only conversation-sibling enrichment) was
+    // started for the message/folder the user was on a moment ago, whenever they move on to a
+    // different one — opening another message or switching folders. This can't abort a command
+    // already in flight (MailKit's ImapClient allows exactly one at a time per connection, and
+    // walking away from one mid-flight corrupts the connection for everything after it — see
+    // AcquireImapLockAsync's own remarks), but it does stop that background work from queuing for
+    // the shared connection lock at all once it's no longer wanted, and from starting its next
+    // step once whatever step is currently running finishes. Without this, background sibling
+    // search for a message the user has already left kept competing with — and sometimes visibly
+    // delaying — the very next folder switch or message open for a connection that can only ever
+    // do one thing at a time.
+    private CancellationTokenSource _backgroundWorkCts = new();
+
+    /// <summary>Cancels whatever background mail work was running for wherever the user just was,
+    /// and returns a token for whatever they're doing now. Call this at the start of any action
+    /// that means "the user has moved on" — opening a message, switching folders — before kicking
+    /// off new background work of your own.</summary>
+    private CancellationToken RestartBackgroundMailWork()
+    {
+        _backgroundWorkCts.Cancel();
+        _backgroundWorkCts.Dispose();
+        _backgroundWorkCts = new CancellationTokenSource();
+        return _backgroundWorkCts.Token;
+    }
 
     // Once a real message body has actually been fetched over IMAP, keep it — reopening the same
     // mail later in the session is then a free in-memory lookup instead of another network round
@@ -611,6 +739,7 @@ public partial class MainWindow
         }
 
         var requestId = ++_openRequestSeq;
+        var backgroundCt = RestartBackgroundMailWork();
         ShowReadingPaneLoading(row);
 
         MessageDetail? detail;
@@ -668,17 +797,15 @@ public partial class MainWindow
         await ReadingPane.EnsureCoreWebView2Async();
 
         var wasUnread = row.Unread;
+        // Fire-and-forget, not awaited — the read-flag reaching the server doesn't gate anything
+        // the user actually sees: the local unread state right below is already optimistic (see
+        // UpdateInboxBadge's own comment), and a failed flag isn't worth surfacing either (per the
+        // comment that used to sit on this same try/catch). Awaiting it here meant every unread
+        // message open paid for a full second IMAP round trip — on top of OpenMessageAsync's own —
+        // before the body could render, which is exactly what showed up as the reading pane
+        // visibly lagging behind the header (which updates immediately, before either fetch).
         if (!UseMockData && wasUnread)
-        {
-            try
-            {
-                await _mail!.SetReadAsync(row.Id, true);
-            }
-            catch (Exception)
-            {
-                // Reading the message still worked; a failed read-flag isn't worth blocking on.
-            }
-        }
+            _ = MarkReadInBackgroundAsync(row.Id);
 
         _openRow = UpdateRow(row.Id, r => r with { Unread = false }) ?? row;
         _openDetail = detail;
@@ -723,6 +850,7 @@ public partial class MainWindow
         ReadingFrom.Text = detail.From;
         ReadingDate.Text = detail.Date;
         ReadingAvatarInitial.Text = row.Initial;
+        UpdateReadingAvatar(row.SenderAddress);
 
         if (IsExternalSender(detail.From))
             ExternalSenderBar.SlideDownReveal();
@@ -748,10 +876,14 @@ public partial class MainWindow
         string cleanHtml;
         try
         {
-            var conversation = await GatherConversationAsync(_openRow, detail);
-            if (requestId != _openRequestSeq)
-                return;
-            cleanHtml = FlagMismatchedLinks(BuildConversationHtml(conversation));
+            // The opened message's own body is already in hand at this point — render it right
+            // away rather than making the reading pane wait on sibling discovery too. Finding
+            // conversation siblings means real IMAP round trips across multiple folders, which can
+            // take several seconds on a slow connection; a pane that stays blank that whole time is
+            // indistinguishable from one that's stuck. Siblings are searched for afterward, in the
+            // background, and folded in once found (see EnrichReadingPaneWithSiblingsAsync below).
+            var primaryOnly = new List<(InboxRow Row, MessageDetail Detail)> { (_openRow, detail) };
+            cleanHtml = FlagMismatchedLinks(BuildConversationHtml(primaryOnly));
 
             if (detail.Calendar is { } invite)
             {
@@ -817,6 +949,65 @@ public partial class MainWindow
 
         if (!UseMockData)
             StatusText.Text = $"{(wasCached ? "Cache hit" : "Live fetch")} — {fetchMs}ms";
+
+        // Fire-and-forget: the primary message is already showing above. Guarded by requestId so a
+        // slow search for a message the user has since navigated away from can't overwrite whatever
+        // is showing now, and by backgroundCt so it stops competing for the shared connection at
+        // all once that happens (see RestartBackgroundMailWork's own remarks).
+        _ = EnrichReadingPaneWithSiblingsAsync(requestId, _openRow, detail, backgroundCt);
+    }
+
+    /// <summary>
+    /// Finds this message's conversation siblings in the background and, if any turn up, redraws
+    /// the reading pane with the full multi-card conversation — without making the caller (the
+    /// message-open flow above) wait for it. Cross-folder sibling search means several extra IMAP
+    /// round trips (searching Inbox and Sent, then fetching each sibling's own body, each behind
+    /// the one shared connection lock every other mail operation also needs), which is real,
+    /// user-visible latency on a slow or proxied connection — that cost is worth keeping for what
+    /// it shows, but not worth making the reading pane sit blank for.
+    /// </summary>
+    private async Task EnrichReadingPaneWithSiblingsAsync(
+        int requestId, InboxRow row, MessageDetail detail, CancellationToken ct)
+    {
+        List<(InboxRow Row, MessageDetail Detail)> conversation;
+        try
+        {
+            conversation = await GatherConversationAsync(row, detail, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            return; // the user moved on before this got anywhere — nothing to show
+        }
+        catch (Exception)
+        {
+            return; // the primary message is already showing; siblings are pure enhancement
+        }
+
+        // Stale — the user has opened a different message since this search started, or nothing
+        // beyond the primary message itself turned up (the overwhelmingly common case, and not
+        // worth a pointless re-navigate/flicker for).
+        if (requestId != _openRequestSeq || conversation.Count <= 1)
+            return;
+
+        string cleanHtml;
+        try
+        {
+            cleanHtml = FlagMismatchedLinks(BuildConversationHtml(conversation));
+        }
+        catch (Exception)
+        {
+            return; // same best-effort reasoning as the primary path's own catch
+        }
+
+        var (safeHtml, hadRemoteImages) = IsIitbSender(detail.From)
+            ? (cleanHtml, false)
+            : SanitizeRemoteImages(cleanHtml);
+        _blockedImagesHtml = hadRemoteImages ? cleanHtml : null;
+        if (hadRemoteImages)
+            ImagesBlockedBar.SlideDownReveal();
+        else
+            ImagesBlockedBar.Visibility = Visibility.Collapsed;
+        NavigateReadingPane(WrapHtml(safeHtml));
     }
 
     /// <summary>
@@ -827,16 +1018,20 @@ public partial class MainWindow
     /// to thread in, the same as Apple Mail does regardless of pagination). Returns newest-first
     /// (Apple Mail's own conversation-view default), opened message included.
     /// </summary>
-    private async Task<List<(InboxRow Row, MessageDetail Detail)>> GatherConversationAsync(InboxRow row, MessageDetail openedDetail)
+    private async Task<List<(InboxRow Row, MessageDetail Detail)>> GatherConversationAsync(
+        InboxRow row, MessageDetail openedDetail, CancellationToken ct = default)
     {
-        var key = row.ConversationKey;
         var results = new List<(InboxRow Row, MessageDetail Detail)> { (row, openedDetail) };
-        if (string.IsNullOrWhiteSpace(key))
-            return results;
 
         IEnumerable<InboxRow> siblings;
         if (UseMockData)
         {
+            // Sample data has no real Message-ID/References to match on, so this path still groups
+            // by subject — it's synthetic demo content, not real mail, and not what the live fix
+            // below is about.
+            var key = row.ConversationKey;
+            if (string.IsNullOrWhiteSpace(key))
+                return results;
             siblings = _folderData.Values.SelectMany(rows => rows)
                 .Where(r => r.Id != row.Id && r.ConversationKey == key)
                 .GroupBy(r => r.Id).Select(g => g.First())
@@ -844,23 +1039,51 @@ public partial class MainWindow
         }
         else
         {
-            try { siblings = await _mail!.FindConversationSiblingsAsync(key, row.Id, openedDetail.MessageId, openedDetail.References); }
+            // Nothing to search for without a real Message-ID or References — see
+            // FindConversationSiblingsAsync's own remarks for why that's the only signal used now.
+            if (string.IsNullOrWhiteSpace(openedDetail.MessageId)
+                && (openedDetail.References is null || openedDetail.References.Count == 0))
+                return results;
+
+            try { siblings = await _mail!.FindConversationSiblingsAsync(row.Id, openedDetail.MessageId, openedDetail.References, ct: ct); }
+            catch (OperationCanceledException) { throw; } // propagate — the caller treats this distinctly
             catch (Exception) { siblings = []; } // best-effort — a lookup failure still shows the opened message alone
         }
 
         foreach (var sibling in siblings)
         {
+            // Same reasoning as FindConversationSiblingsAsync's own per-folder check: only between
+            // siblings, never abandoning a fetch already in flight — the user having moved on stops
+            // this from starting the *next* sibling's round trip, nothing more.
+            if (ct.IsCancellationRequested)
+                break;
+
             MessageDetail? siblingDetail = _localBodies.GetValueOrDefault(sibling.Id)
                 ?? (UseMockData ? MockData.MessageBodies.GetValueOrDefault(sibling.Id) : null);
 
+            var bodyFetchFailed = false;
             if (siblingDetail is null && !UseMockData)
             {
-                try { siblingDetail = await _mail!.OpenMessageAsync(sibling.Id); }
-                catch (Exception) { /* best-effort — a conversation missing one sibling still shows the rest */ }
+                try { siblingDetail = await _mail!.OpenMessageAsync(sibling.Id, sibling.Mailbox, ct); }
+                catch (Exception) { bodyFetchFailed = true; }
             }
 
             if (siblingDetail is not null)
+            {
                 results.Add((sibling, siblingDetail));
+            }
+            else if (bodyFetchFailed)
+            {
+                // A real Apple Mail-style thread still lists a message it knows exists even when
+                // its body couldn't be fetched — silently dropping it instead (the old behaviour)
+                // meant the conversation quietly lost a message with no indication anything was
+                // ever there. The row itself (sender/subject/date) already came back from the
+                // header search that found this sibling in the first place, so there's real
+                // information to show even without the body.
+                results.Add((sibling, new MessageDetail(
+                    Subject: sibling.Subject, From: sibling.Sender, Date: sibling.Date,
+                    BodyHtml: """<p style="color:#999;font-style:italic;">Couldn't load this message.</p>""")));
+            }
         }
 
         // The message actually opened always leads, regardless of where it falls chronologically
@@ -956,6 +1179,20 @@ public partial class MainWindow
         return $"rgba({r},{g},{b},{alpha.ToString(System.Globalization.CultureInfo.InvariantCulture)})";
     }
 
+    /// <summary>
+    /// Builds the whole conversation as a real DOM (AngleSharp), appending each message's card as
+    /// a genuine sibling node — not by concatenating HTML strings together, which an earlier
+    /// version of this method did. That distinction matters specifically because of what's
+    /// untrusted here: a message's own body can be malformed (a genuinely unclosed tag some sender's
+    /// mail client produced), and a final "re-parse the whole assembled document" pass — tried and
+    /// found insufficient — only guarantees the *result* is well-formed, not that the unclosed
+    /// tag's own auto-recovery didn't legally nest the *next* card inside it as a child, which is
+    /// exactly what an unclosed element's own content model allows a spec-compliant parser to do.
+    /// Setting one element's InnerHtml, by contrast, gives that string its own isolated parsing
+    /// context scoped to that one element — nothing inside it can structurally reach outside its
+    /// own subtree, no matter how malformed it is, so a card built this way physically cannot
+    /// swallow a sibling the way a shared, concatenated parse could.
+    /// </summary>
     private string BuildConversationHtml(List<(InboxRow Row, MessageDetail Detail)> conversation)
     {
         _conversationAttachments.Clear();
@@ -968,7 +1205,10 @@ public partial class MainWindow
         // quoted history the only place that content exists, so it's kept (collapsed) in that case.
         var suppressNestedQuotes = conversation.Count > 1;
 
-        var sb = new System.Text.StringBuilder();
+        var parser = new AngleSharp.Html.Parser.HtmlParser();
+        var document = parser.ParseDocument("<!doctype html><html><body></body></html>");
+        var container = document.Body!;
+
         foreach (var (msgRow, msgDetail) in conversation)
         {
             var body = WrapClickableImages(
@@ -1004,23 +1244,35 @@ public partial class MainWindow
                     : "";
                 attachmentsHtml = $"""<div class="qattachments">{chips}{downloadAll}</div>""";
             }
-            sb.Append($"""
-                <div class="qcard">
-                  <div class="qhead">
-                    <div class="qavatar">{Encode(msgRow.Initial)}</div>
-                    <div class="qwho">
-                      <div class="qname">{senderLink}</div>
-                      {toLine}
-                      {ccLine}
-                    </div>
-                    <div class="qdate">{Encode(msgDetail.Date)}</div>
+            // Apple Mail's own in-thread convention: a flagged message keeps its star visible on
+            // its own card, and an unread one keeps its blue dot, rather than that state only ever
+            // showing in the message list and disappearing the moment you're looking at the thread.
+            var unreadDot = msgRow.Unread ? """<span class="qunread" title="Unread"></span>""" : "";
+            var star = msgRow.Starred ? """<span class="qstar" title="Starred">&#9733;</span>""" : "";
+
+            // The shell (avatar/name/to/cc/date/attachments) is all content this app built itself
+            // — trusted, safe to parse as one InnerHtml assignment. The message body is the one
+            // untrusted piece, so it's deliberately left out here and set on .qbody separately
+            // below, in its own isolated parsing scope (see this method's own remarks).
+            var qcard = document.CreateElement("div");
+            qcard.ClassName = "qcard";
+            qcard.InnerHtml = $"""
+                <div class="qhead">
+                  <div class="qavatar">{Encode(msgRow.Initial)}</div>
+                  <div class="qwho">
+                    <div class="qname">{unreadDot}{senderLink}</div>
+                    {toLine}
+                    {ccLine}
                   </div>
-                  <div class="qbody">{body}</div>
-                  {attachmentsHtml}
+                  <div class="qdate">{star}{Encode(msgDetail.Date)}</div>
                 </div>
-                """);
+                <div class="qbody"></div>
+                {attachmentsHtml}
+                """;
+            container.AppendChild(qcard);
+            qcard.QuerySelector(".qbody")!.InnerHtml = body;
         }
-        return sb.ToString();
+        return container.InnerHtml;
     }
 
     /// <summary>
@@ -1338,6 +1590,40 @@ public partial class MainWindow
     /// and shows an explicit "Loading…" placeholder rather than the *previous* message's content,
     /// which otherwise stays on screen long enough to look like the wrong mail opened.
     /// </summary>
+    private async Task MarkReadInBackgroundAsync(string id)
+    {
+        try
+        {
+            await _mail!.SetReadAsync(id, true);
+        }
+        catch (Exception)
+        {
+            // Reading the message still worked; a failed read-flag isn't worth surfacing here.
+        }
+    }
+
+    // Bumped on every call so a slow lookup for a message the user has already navigated away
+    // from can't land its result on top of whatever is showing now.
+    private int _readingAvatarToken;
+
+    private void UpdateReadingAvatar(string senderAddress)
+    {
+        ReadingAvatarImage.Visibility = Visibility.Collapsed;
+        ReadingAvatarBadge.Visibility = Visibility.Collapsed;
+        var token = ++_readingAvatarToken;
+        if (UseMockData || string.IsNullOrEmpty(senderAddress))
+            return;
+
+        _ = AvatarService.GetAvatarAsync(senderAddress).ContinueWith(t =>
+        {
+            if (token != _readingAvatarToken || t.Result is not { } result)
+                return;
+            ReadingAvatarImage.Fill = new ImageBrush(result.Image) { Stretch = Stretch.UniformToFill };
+            ReadingAvatarImage.Visibility = Visibility.Visible;
+            ReadingAvatarBadge.Visibility = result.Verified ? Visibility.Visible : Visibility.Collapsed;
+        }, TaskScheduler.FromCurrentSynchronizationContext());
+    }
+
     private void ShowReadingPaneLoading(InboxRow row)
     {
         EmptyState.Visibility = Visibility.Collapsed;
@@ -1350,6 +1636,7 @@ public partial class MainWindow
         ReadingFrom.Text = row.Sender;
         ReadingDate.Text = row.Date;
         ReadingAvatarInitial.Text = row.Initial;
+        UpdateReadingAvatar(row.SenderAddress);
         ReadingFromRow.Visibility = Visibility.Collapsed;
         ExternalSenderBar.Visibility = Visibility.Collapsed;
         MeetingBar.Visibility = Visibility.Collapsed;

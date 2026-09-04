@@ -113,8 +113,29 @@ public sealed class ContactsIndex
                 .Select(c => new ContactEntry(
                     string.IsNullOrWhiteSpace(c.DisplayName) ? c.Address : c.DisplayName,
                     c.Address,
-                    string.IsNullOrWhiteSpace(c.DisplayName) ? c.Address : $"{c.DisplayName} <{c.Address}>"))
+                    string.IsNullOrWhiteSpace(c.DisplayName) ? c.Address : $"{c.DisplayName} <{c.Address}>",
+                    c.Score))
                 .ToList();
+        }
+    }
+
+    /// <summary>Exact lookup for one address — unlike <see cref="Suggest"/>, no substring matching,
+    /// so this is the right one to ask "is this specific recipient someone I've actually mailed
+    /// before" for (the compose window's recipient-chip coloring and click-for-details popover).</summary>
+    public ContactEntry? FindContact(string address)
+    {
+        if (string.IsNullOrWhiteSpace(address))
+            return null;
+
+        lock (_gate)
+        {
+            if (!_byAddress.TryGetValue(address, out var c))
+                return null;
+            return new ContactEntry(
+                string.IsNullOrWhiteSpace(c.DisplayName) ? c.Address : c.DisplayName,
+                c.Address,
+                string.IsNullOrWhiteSpace(c.DisplayName) ? c.Address : $"{c.DisplayName} <{c.Address}>",
+                c.Score);
         }
     }
 
@@ -133,7 +154,8 @@ public sealed class ContactsIndex
                 .Select(c => new ContactEntry(
                     string.IsNullOrWhiteSpace(c.DisplayName) ? c.Address : c.DisplayName,
                     c.Address,
-                    string.IsNullOrWhiteSpace(c.DisplayName) ? c.Address : $"{c.DisplayName} <{c.Address}>"))
+                    string.IsNullOrWhiteSpace(c.DisplayName) ? c.Address : $"{c.DisplayName} <{c.Address}>",
+                    c.Score))
                 .ToList();
         }
     }
@@ -141,7 +163,7 @@ public sealed class ContactsIndex
 
 /// <summary>One entry in the browsable contact list, as the address-book picker and the recipient
 /// autocomplete dropdown both display it.</summary>
-public readonly record struct ContactEntry(string DisplayName, string Address, string Formatted)
+public readonly record struct ContactEntry(string DisplayName, string Address, string Formatted, int Score = 0)
 {
     /// <summary>Avatar-circle letter — same rule as <c>InboxRow.Initial</c>, for the same reason:
     /// the first letter or digit someone would actually recognise, not just DisplayName[0], which

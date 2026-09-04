@@ -41,7 +41,14 @@ public sealed record ComposeResult(
     string Subject,
     string Body,
     string BodyHtml = "",
-    IReadOnlyList<ComposeAttachment>? Attachments = null)
+    IReadOnlyList<ComposeAttachment>? Attachments = null,
+    // RFC 5322 threading headers for a reply — null for a fresh message or a forward (forwards
+    // aren't chained into the original thread, matching real mail clients' own convention). Without
+    // these, a sent reply carries no link back to what it replied to at all, so opening it later
+    // (in Sent, or from another client/device) can never find the original as part of the same
+    // conversation — see BuildMessage's own remarks for exactly what gets set from this.
+    string? InReplyTo = null,
+    IReadOnlyList<string>? References = null)
 {
     public IReadOnlyList<ComposeAttachment> Files => Attachments ?? [];
 
@@ -69,6 +76,8 @@ public partial class ComposeWindow : Window
 
     private readonly List<ComposeAttachment> _attachments = [];
     private readonly string _initialHtml;
+    private readonly string? _inReplyTo;
+    private readonly IReadOnlyList<string>? _references;
 
     // Kept current by the editor posting back on every (debounced) edit, so closing the window —
     // which can't await — still has the body to hand to a draft.
@@ -85,6 +94,11 @@ public partial class ComposeWindow : Window
     /// fields just behave as plain text boxes then.
     /// </summary>
     public Func<string, IReadOnlyList<EmailClient.Mail.ContactEntry>>? SuggestContacts { get; set; }
+
+    /// <summary>Exact-address lookup (not SuggestContacts' substring search) — wired in by
+    /// MainWindow the same way, and set on every RecipientBox below so a chip can tell whether its
+    /// own address is actually someone the account has mailed before.</summary>
+    public Func<string, EmailClient.Mail.ContactEntry?>? FindContact { get; set; }
 
     /// <summary>
     /// Wired in by MainWindow (real mailboxes only) — periodically hands the current draft off to
@@ -106,10 +120,14 @@ public partial class ComposeWindow : Window
     private string _lastAutosavedSignature = "";
 
     public ComposeWindow(string to = "", string subject = "", string body = "", string cc = "", string bcc = "",
-        string bodyHtml = "", IReadOnlyList<ComposeAttachment>? attachments = null)
+        string bodyHtml = "", IReadOnlyList<ComposeAttachment>? attachments = null,
+        string? inReplyTo = null, IReadOnlyList<string>? references = null)
     {
         InitializeComponent();
         MaximizeBoundsFix.Apply(this);
+
+        _inReplyTo = inReplyTo;
+        _references = references;
 
         ToBox.Text = to;
         SubjectBox.Text = subject;
@@ -200,6 +218,22 @@ public partial class ComposeWindow : Window
             // just collapsing to a caret at the end, which is what silently turned "select text,
             // change its colour/size/font" into "nothing visibly happens" for all three.
             let lastEditorSelection = null;
+            // Bold/Italic/Underline/Strikethrough used to be plain buttons with no way to tell
+            // whether the caret was actually sitting inside formatted text — clicking Bold, then
+            // clicking elsewhere, gave no visual sign the button's own state had anything to do
+            // with what's under the cursor. Posted as its own lightweight message (not bundled into
+            // post()'s html/text payload, which is deliberately debounced) so it can fire on every
+            // selection change without waiting out that debounce.
+            function postFormatState() {
+                window.chrome.webview.postMessage(JSON.stringify({
+                    format: {
+                        bold: document.queryCommandState("bold"),
+                        italic: document.queryCommandState("italic"),
+                        underline: document.queryCommandState("underline"),
+                        strikeThrough: document.queryCommandState("strikeThrough")
+                    }
+                }));
+            }
             document.addEventListener("selectionchange", function() {
                 const selection = window.getSelection();
                 if (selection.rangeCount === 0)
@@ -207,6 +241,8 @@ public partial class ComposeWindow : Window
                 const range = selection.getRangeAt(0);
                 if (!range.collapsed && editor.contains(range.commonAncestorContainer))
                     lastEditorSelection = range.cloneRange();
+                if (editor.contains(range.commonAncestorContainer))
+                    postFormatState();
             });
             function post() {
                 window.chrome.webview.postMessage(JSON.stringify({
@@ -230,6 +266,13 @@ public partial class ComposeWindow : Window
                 if (e.key !== "Enter" || e.ctrlKey || e.altKey)
                     return;
                 e.preventDefault();
+                // Same restore-a-lost-selection step every other command already takes (see
+                // ensureSelection's own comment) — without it, a live selection that got cleared
+                // by a toolbar click or the periodic signature refresh fell through to Chromium's
+                // own default insertion point, which is the end of the editor — exactly where a
+                // signature sits, making Enter/Shift+Enter appear to "jump" the caret straight to
+                // it instead of breaking the line where the user was actually typing.
+                ensureSelection();
                 if (e.shiftKey)
                     document.execCommand("insertHTML", false, "<br><br>");
                 else
@@ -324,9 +367,35 @@ public partial class ComposeWindow : Window
                 ensureSelection();
                 document.execCommand(command, false, value === undefined ? null : value);
                 post();
+                // Toggling bold/italic/etc. often doesn't move the selection's own boundaries, so
+                // the selectionchange listener above (which is what normally drives
+                // postFormatState) may never fire for a click that changed formatting state without
+                // changing what's selected — this covers that case explicitly.
+                postFormatState();
+            };
+            // Not routed through exec()'s generic execCommand("createLink", ...) — that command's
+            // own spec only guarantees wrapping an existing (non-collapsed) selection; clicking
+            // "Insert link" with nothing selected (the ordinary case: place the cursor, then open
+            // the link dialog) left it ambiguous whether anything visible would appear at all,
+            // which read as the button silently doing nothing. Explicit about both cases instead:
+            // a real selection gets wrapped, an empty one gets the URL itself inserted as the link
+            // text, so a click always produces something you can see and click.
+            window.insertLink = function(url) {
+                editor.focus();
+                ensureSelection();
+                const selection = window.getSelection();
+                if (selection.rangeCount > 0 && !selection.getRangeAt(0).collapsed) {
+                    document.execCommand("createLink", false, url);
+                } else {
+                    const escaped = url.replace(/&/g, "&amp;").replace(/</g, "&lt;")
+                        .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+                    document.execCommand("insertHTML", false, '<a href="' + escaped + '">' + escaped + "</a>");
+                }
+                post();
             };
             window.insertPlainText = function(text) {
                 editor.focus();
+                ensureSelection();
                 document.execCommand("insertText", false, text);
                 post();
             };
@@ -338,6 +407,7 @@ public partial class ComposeWindow : Window
             };
             window.insertImage = function(dataUri) {
                 editor.focus();
+                ensureSelection();
                 document.execCommand("insertImage", false, dataUri);
                 post();
             };
@@ -585,11 +655,32 @@ public partial class ComposeWindow : Window
                 _bodyHtml = html.GetString() ?? "";
             if (document.RootElement.TryGetProperty("text", out var text))
                 _bodyText = text.GetString() ?? "";
+            if (document.RootElement.TryGetProperty("format", out var format))
+                UpdateFormatButtonState(format);
         }
         catch (JsonException)
         {
             // A malformed post is not worth interrupting composition over.
         }
+    }
+
+    /// <summary>Bold/Italic/Underline/Strikethrough now show whether the caret is actually sitting
+    /// inside formatted text (see postFormatState in the embedded JS) instead of never reflecting
+    /// it at all — same active-state look the round hover-icon style already reserves a spot for
+    /// (see IconButton's own "HoverOverlay stays free for a programmatic Background change"
+    /// comment; FormatButton's template follows the identical pattern for the same reason).</summary>
+    private void UpdateFormatButtonState(JsonElement format)
+    {
+        var active = (System.Windows.Media.Brush)FindResource("AccentSoft");
+        var inactive = System.Windows.Media.Brushes.Transparent;
+
+        void Apply(System.Windows.Controls.Button button, string property) =>
+            button.Background = format.TryGetProperty(property, out var value) && value.GetBoolean() ? active : inactive;
+
+        Apply(BoldButton, "bold");
+        Apply(ItalicButton, "italic");
+        Apply(UnderlineButton, "underline");
+        Apply(StrikethroughButton, "strikeThrough");
     }
 
     /// <summary>Pulls the very latest content, so Send never misses the last keystroke.</summary>
@@ -1556,7 +1647,12 @@ public partial class ComposeWindow : Window
             PlainEditor.SelectedText = MailText.HtmlToPlainText(html);
             return;
         }
-        await RichEditor.CoreWebView2.ExecuteScriptAsync($"insertHtml({JsonSerializer.Serialize(html)})");
+        // Same marker MainWindow.Compose.cs's own SignatureHtml wraps an auto-inserted default
+        // signature in — see its comment for why: lets the reading pane's quote detection tell a
+        // signature's own <blockquote> (a common decorative-indent design, nothing to do with
+        // quoting) apart from an actual quoted reply.
+        await RichEditor.CoreWebView2.ExecuteScriptAsync(
+            $"""insertHtml({JsonSerializer.Serialize($"<div class=\"qsig\">{html}</div>")})""");
     }
 
     private async void FontCombo_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
@@ -1674,7 +1770,10 @@ public partial class ComposeWindow : Window
         // through a separate WPF field first) would do nothing, while every other toolbar button —
         // a single click, no competing focus holder — worked fine.
         RichEditor.Focus();
-        await ExecAsync("createLink", parsed.AbsoluteUri);
+        if (_plainTextMode || !_editorReady)
+            return;
+        await RichEditor.CoreWebView2.ExecuteScriptAsync(
+            $"insertLink({JsonSerializer.Serialize(parsed.AbsoluteUri)})");
     }
 
     private void CancelLink_Click(object sender, RoutedEventArgs e) => LinkBar.SlideUpHide(110, toOffset: -6);
@@ -1859,6 +1958,7 @@ public partial class ComposeWindow : Window
             box.TextChanged += (_, _) => RecipientInput_TextChanged(box);
             box.InputTextBox.PreviewKeyDown += RecipientBox_PreviewKeyDown;
             box.LostFocus += (_, _) => HideSuggestions();
+            box.FindContact = FindContact;
         }
     }
 
@@ -2203,7 +2303,8 @@ public partial class ComposeWindow : Window
         ToBox.Text, CcBox.Text, BccBox.Text, SubjectBox.Text,
         _plainTextMode ? PlainEditor.Text : _bodyText,
         _plainTextMode ? "" : _bodyHtml,
-        [.. _attachments]);
+        [.. _attachments],
+        _inReplyTo, _references);
 
     // Catches the everyday "I said I attached something and then didn't" mistake — every major
     // client nags about this one way or another. Fires once per send attempt; if the user chooses

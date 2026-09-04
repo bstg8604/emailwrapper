@@ -1,6 +1,7 @@
 ﻿using System.Net;
 using System.Text.RegularExpressions;
 using System.Linq;
+using MimeKit;
 
 namespace EmailClient.Automation;
 
@@ -108,19 +109,37 @@ public static class MailText
     }
 
     /// <summary>
+    /// Splits a recipient/address-list string into its real individual entries via MimeKit's own
+    /// parser — never a naive comma-split. A quoted display name can legitimately contain its own
+    /// comma ("Doe, John" &lt;john@x.com&gt; is valid RFC 5322), and splitting on every literal
+    /// comma cuts that one recipient in two: a dangling "Doe fragment (with a stray leading quote
+    /// character) counted as its own separate recipient, and " John" &lt;john@x.com&gt; as another
+    /// — inflating the real count and corrupting the display text, which is exactly what a live
+    /// report of a mangled, prematurely-collapsed "and N more" To line turned out to be. Same fix
+    /// RecipientBox's own ParseAddresses already applies to compose's recipient chips; this brings
+    /// the reading pane's display formatting in line with it.
+    /// </summary>
+    private static List<string> SplitAddressList(string recipients)
+    {
+        if (string.IsNullOrWhiteSpace(recipients))
+            return [];
+
+        if (InternetAddressList.TryParse(recipients, out var list) && list.Count > 0)
+            return list.Select(a => a.ToString()).ToList();
+
+        // Didn't parse as a real address list at all — falls back to the old behavior rather than
+        // losing the text outright; shouldn't normally happen for text this app itself already
+        // round-tripped through IMAP/compose.
+        return recipients.Split(',').Select(r => r.Trim()).Where(r => r.Length > 0).ToList();
+    }
+
+    /// <summary>
     /// Normalizes a comma-separated recipient list for display: an address that already carries a
     /// display name is left as "Name &lt;email&gt;"; a bare address is shown as-is (just the email),
     /// matching Gmail/Outlook's own convention rather than inventing punctuation around it.
     /// </summary>
-    public static string FormatRecipientList(string recipients)
-    {
-        if (string.IsNullOrWhiteSpace(recipients))
-            return "";
-
-        return string.Join(", ", recipients.Split(',')
-            .Select(r => r.Trim())
-            .Where(r => r.Length > 0));
-    }
+    public static string FormatRecipientList(string recipients) =>
+        string.Join(", ", SplitAddressList(recipients));
 
     /// <summary>
     /// Splits a comma-separated recipient list into what should be shown outright versus collapsed
@@ -130,14 +149,7 @@ public static class MailText
     /// </summary>
     public static (List<string> Shown, List<string> Hidden) SplitRecipients(string recipients, int maxShown = 4)
     {
-        if (string.IsNullOrWhiteSpace(recipients))
-            return ([], []);
-
-        var all = recipients.Split(',')
-            .Select(r => r.Trim())
-            .Where(r => r.Length > 0)
-            .ToList();
-
+        var all = SplitAddressList(recipients);
         return all.Count <= maxShown
             ? (all, [])
             : (all.Take(maxShown).ToList(), all.Skip(maxShown).ToList());

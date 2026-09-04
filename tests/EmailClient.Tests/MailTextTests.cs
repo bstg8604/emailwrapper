@@ -131,6 +131,27 @@ public class MailTextTests
     }
 
     [Fact]
+    public void FormatRecipientList_QuotedDisplayNameWithComma_IsNotSplitInTwo()
+    {
+        // "Bhansing, Someone" is one recipient with a comma inside a quoted display name (valid
+        // RFC 5322) — a naive comma-split used to cut it into a dangling '"Bhansing' fragment and
+        // a ' Someone" <email>' fragment, inflating the count and corrupting the text.
+        var formatted = MailText.FormatRecipientList("\"Bhansing, Someone\" <bhansing@iitb.ac.in>, second@iitb.ac.in");
+        Assert.DoesNotContain("\"Bhansing<", formatted.Replace(" ", ""));
+        Assert.Contains("second@iitb.ac.in", formatted);
+    }
+
+    [Fact]
+    public void SplitRecipients_QuotedDisplayNameWithComma_CountsAsOneRecipient()
+    {
+        var (shown, hidden) = MailText.SplitRecipients(
+            "\"Bhansing, Someone\" <bhansing@iitb.ac.in>, second@iitb.ac.in", maxShown: 4);
+
+        Assert.Equal(2, shown.Count + hidden.Count);
+        Assert.Empty(hidden);
+    }
+
+    [Fact]
     public void FormatListDate_Today_ReturnsTimeOnly()
     {
         var now = DateTime.Now;

@@ -17,7 +17,16 @@ public sealed record InboxRow(
     [property: JsonPropertyName("timestamp")] DateTime? Timestamp = null,
     // The raw sender address (never a display name) — kept alongside Sender so the list can tell
     // whether a message is from outside the signed-in account's domain without needing to reopen it.
-    [property: JsonPropertyName("senderAddress")] string SenderAddress = "")
+    [property: JsonPropertyName("senderAddress")] string SenderAddress = "",
+    // Null means "whatever folder is currently open" (every existing caller before cross-folder
+    // conversation siblings existed) — only ever set explicitly for a row that was found in a
+    // *different* folder than the one currently showing (see
+    // ImapMailBackend.FindConversationSiblingsAsync), so every operation that later needs to act
+    // on this specific row (opening its body, downloading an attachment) knows which folder to
+    // select first. IMAP UIDs are only unique within one folder, not across the whole mailbox, so
+    // treating a cross-folder row's id as if it belonged to the active folder risks operating on
+    // an entirely unrelated message that happens to share the same UID number.
+    [property: JsonPropertyName("mailbox")] string? Mailbox = null)
 {
     public string Initial
     {
@@ -107,12 +116,14 @@ public sealed record InboxRow(
 
     // A leading bracketed-tag strip ("[EXTERNAL] Re: X" -> "X") was tried here and reverted — a
     // live report of a conversation view showing an unrelated sender's whole mail history pointed
-    // at it (and at the header-based sibling matching in ImapMailBackend.FindConversationSiblingsAsync,
-    // also reverted) as prime suspects: stripping an arbitrary "[...]" wrapper risks collapsing many
-    // of one sender's genuinely-unrelated subjects down to the same remaining text whenever they
-    // share a common tag (a course code, a mailing list name), which is exactly what over-matching
-    // "by sender" would look like. Not restored until there's log evidence of which one actually
-    // caused it (see FindConversationSiblingsAsync's own diagnostic logging).
+    // at it (and at the then-existing subject-fallback in ImapMailBackend.FindConversationSiblingsAsync,
+    // since removed entirely — that method now matches only real Message-ID/References links, the
+    // same as Apple Mail/Thunderbird) as prime suspects: stripping an arbitrary "[...]" wrapper
+    // risks collapsing many of one sender's genuinely-unrelated subjects down to the same remaining
+    // text whenever they share a common tag (a course code, a mailing list name). Given the actual
+    // conversation view no longer trusts subject text at all for live mail, this bracket-stripping
+    // idea is safe to revisit if it's ever wanted — it isn't restored here only because nothing
+    // has asked for it since.
 
     public string ConversationKey
     {

@@ -365,12 +365,32 @@ public partial class MainWindow
         return $"{ComposeLeadIn}{header}{QuotableHtml(detail.BodyHtml)}";
     }
 
+    /// <summary>The RFC 5322 References chain a reply to <paramref name="detail"/> should carry —
+    /// the original's own ancestry plus the original itself, which is the standard threading
+    /// algorithm every real mail client uses (and what the reading pane's own conversation search
+    /// now looks for server-side — see ImapMailBackend.FindConversationSiblingsAsync). Null when
+    /// the original has no usable Message-ID at all, matching how a reply to that kind of message
+    /// simply can't be threaded — the same real limitation as everywhere else this session settled
+    /// on for strict header-based threading.</summary>
+    private static IReadOnlyList<string>? ReplyReferences(MessageDetail detail)
+    {
+        if (string.IsNullOrWhiteSpace(detail.MessageId))
+            return detail.References;
+
+        var chain = new List<string>();
+        if (detail.References is not null)
+            chain.AddRange(detail.References);
+        chain.Add(detail.MessageId);
+        return chain;
+    }
+
     private void ReplyButton_Click(object sender, RoutedEventArgs e)
     {
         if (_openDetail is not { } detail)
             return;
         OpenCompose(detail.From, ReplySubject(detail.Subject), BuildReplyBody(detail),
-            bodyHtml: WithSignature(BuildReplyBodyHtml(detail)));
+            bodyHtml: WithSignature(BuildReplyBodyHtml(detail)),
+            inReplyTo: detail.MessageId, references: ReplyReferences(detail));
     }
 
     private void ReplyAllButton_Click(object sender, RoutedEventArgs e)
@@ -382,7 +402,8 @@ public partial class MainWindow
             [SelfAddress, MailText.AddressOnly(detail.From)], detail.To, detail.Cc);
 
         OpenCompose(detail.From, ReplySubject(detail.Subject), BuildReplyBody(detail), cc,
-            bodyHtml: WithSignature(BuildReplyBodyHtml(detail)));
+            bodyHtml: WithSignature(BuildReplyBodyHtml(detail)),
+            inReplyTo: detail.MessageId, references: ReplyReferences(detail));
     }
 
     private void ForwardButton_Click(object sender, RoutedEventArgs e)
@@ -592,10 +613,14 @@ public partial class MainWindow
     // Editing now lives in the account popup's Signature tab (see OpenLoginWindow) rather than a
     // separate window/toolbar button.
 
-    /// <summary>The default signature as HTML, or "" when none is configured.</summary>
+    /// <summary>The default signature as HTML, or "" when none is configured. Wrapped in a marker
+    /// div (invisible — no styling hangs off the class name) purely so the reading pane's own quote
+    /// detection can tell a signature's own <c>&lt;blockquote&gt;</c> (some signature designs use
+    /// one just for a decorative left-indent, nothing to do with quoting) apart from an actual
+    /// quoted reply — see SeparateQuotedThread's own use of this class.</summary>
     private string SignatureHtml =>
         _settings.DefaultSignatureIndex >= 0 && _settings.DefaultSignatureIndex < _settings.Signatures.Count
-            ? _settings.Signatures[_settings.DefaultSignatureIndex].BodyHtml
+            ? $"""<div class="qsig">{_settings.Signatures[_settings.DefaultSignatureIndex].BodyHtml}</div>"""
             : "";
 
     /// <summary>

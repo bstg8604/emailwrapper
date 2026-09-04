@@ -429,10 +429,14 @@ public partial class MainWindow
     /// the previous <c>ShowDialog</c>.
     /// </summary>
     private void OpenCompose(string to = "", string subject = "", string body = "", string cc = "", string bcc = "",
-        string? replacesDraftId = null, string bodyHtml = "", IReadOnlyList<ComposeAttachment>? attachments = null)
+        string? replacesDraftId = null, string bodyHtml = "", IReadOnlyList<ComposeAttachment>? attachments = null,
+        string? inReplyTo = null, IReadOnlyList<string>? references = null)
     {
-        var compose = new ComposeWindow(to, subject, body, cc, bcc, bodyHtml, attachments) { Owner = this };
+        var compose = new ComposeWindow(to, subject, body, cc, bcc, bodyHtml, attachments, inReplyTo, references) { Owner = this };
         compose.SuggestContacts = query => SuggestAllContacts(query);
+        // Exact lookup (not the substring search SuggestContacts does) for the recipient chips'
+        // own "is this actually someone I've mailed before" coloring and click-for-details popover.
+        compose.FindContact = address => _mail?.Contacts.FindContact(address);
         // Live lookup (not a snapshot at open time) so editing signatures while a compose window
         // is already open still offers the current set, not whatever existed a minute ago.
         compose.GetSignatures = () =>

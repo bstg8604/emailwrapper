@@ -12,7 +12,7 @@
 ; external dependency left is the WebView2 runtime (checked for below).
 
 #define AppName        "Purplemail"
-#define AppVersion     "1.0.14"
+#define AppVersion     "1.0.23"
 #define AppPublisher   "Purplemail"
 #define AppExe         "Purplemail.exe"
 #define SourceDir      "..\dist\publish"

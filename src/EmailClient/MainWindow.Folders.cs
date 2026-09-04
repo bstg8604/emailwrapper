@@ -91,6 +91,12 @@ public partial class MainWindow
             return;
         }
 
+        // Switching folders means "the user has moved on" exactly as much as opening a different
+        // message does — any conversation-sibling search still running for whatever was open before
+        // should stop competing for the shared IMAP connection with the folder load this is about
+        // to start (see RestartBackgroundMailWork's own remarks).
+        RestartBackgroundMailWork();
+
         _currentFolder = folder;
         HighlightFolder(folder);
         ResetReadingPane();
@@ -342,6 +348,57 @@ public partial class MainWindow
 
     private void MessageRow_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e) =>
         _dragStart = e.GetPosition(null);
+
+    // ---- Sender avatars (BIMI logo when the sender's domain publishes one, else the existing
+    // colored-initial fallback already drawn in XAML underneath these) --------------------------
+
+    private void MessageRowAvatar_DataContextChanged(object sender, DependencyPropertyChangedEventArgs e)
+    {
+        if (sender is not FrameworkElement root || root.DataContext is not InboxRow row)
+            return;
+        if (FindNamedDescendant<System.Windows.Shapes.Ellipse>(root, "RowAvatarImage") is not { } image
+            || FindNamedDescendant<Border>(root, "RowAvatarBadge") is not { } badge)
+            return;
+
+        // Reset immediately so a recycled container doesn't keep showing the previous row's
+        // avatar/badge while the new row's own lookup (cached or not) is still in flight.
+        image.Visibility = Visibility.Collapsed;
+        badge.Visibility = Visibility.Collapsed;
+
+        if (UseMockData || string.IsNullOrEmpty(row.SenderAddress))
+            return;
+        _ = ApplyAvatarAsync(row.SenderAddress, image, badge);
+    }
+
+    private static async Task ApplyAvatarAsync(string address, System.Windows.Shapes.Ellipse image, Border badge)
+    {
+        var result = await AvatarService.GetAvatarAsync(address);
+        if (result is null)
+            return;
+        // The container may have been recycled for a different row while this lookup was in
+        // flight (virtualized list scrolled on) — DataContext is inherited, so re-checking it
+        // still matches the address this lookup started for avoids painting the wrong sender.
+        if (image.DataContext is not InboxRow current
+            || !string.Equals(current.SenderAddress, address, StringComparison.OrdinalIgnoreCase))
+            return;
+        image.Fill = new ImageBrush(result.Image) { Stretch = Stretch.UniformToFill };
+        image.Visibility = Visibility.Visible;
+        badge.Visibility = result.Verified ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private static T? FindNamedDescendant<T>(DependencyObject parent, string name) where T : FrameworkElement
+    {
+        var count = VisualTreeHelper.GetChildrenCount(parent);
+        for (var i = 0; i < count; i++)
+        {
+            var child = VisualTreeHelper.GetChild(parent, i);
+            if (child is T typed && typed.Name == name)
+                return typed;
+            if (FindNamedDescendant<T>(child, name) is { } found)
+                return found;
+        }
+        return null;
+    }
 
     private void MessageRow_PreviewMouseMove(object sender, System.Windows.Input.MouseEventArgs e)
     {

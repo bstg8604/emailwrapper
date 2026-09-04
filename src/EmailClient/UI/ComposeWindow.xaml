@@ -347,21 +347,21 @@
                     Background="{DynamicResource AccentSofter}" CornerRadius="8">
               <StackPanel>
                 <WrapPanel x:Name="FormatWrap" Orientation="Horizontal">
-                    <Button Tag="RichOnly" Style="{StaticResource FormatButton}" Click="Bold_Click" ToolTip="Bold (Ctrl+B)"
+                    <Button x:Name="BoldButton" Tag="RichOnly" Style="{StaticResource FormatButton}" Click="Bold_Click" ToolTip="Bold (Ctrl+B)"
                             AutomationProperties.Name="Bold">
                         <TextBlock Text="B" FontWeight="Bold" FontSize="14"/>
                     </Button>
-                    <Button Tag="RichOnly" Style="{StaticResource FormatButton}" Click="Italic_Click" ToolTip="Italic (Ctrl+I)"
+                    <Button x:Name="ItalicButton" Tag="RichOnly" Style="{StaticResource FormatButton}" Click="Italic_Click" ToolTip="Italic (Ctrl+I)"
                             AutomationProperties.Name="Italic">
                         <TextBlock Text="I" FontStyle="Italic" FontSize="14" FontFamily="Georgia, serif"/>
                     </Button>
-                    <Button Tag="RichOnly" Style="{StaticResource FormatButton}" Click="Underline_Click" ToolTip="Underline (Ctrl+U)"
+                    <Button x:Name="UnderlineButton" Tag="RichOnly" Style="{StaticResource FormatButton}" Click="Underline_Click" ToolTip="Underline (Ctrl+U)"
                             AutomationProperties.Name="Underline">
                         <TextBlock Text="U" FontSize="14">
                             <TextBlock.TextDecorations><TextDecoration Location="Underline"/></TextBlock.TextDecorations>
                         </TextBlock>
                     </Button>
-                    <Button Tag="RichOnly" Style="{StaticResource FormatButton}" Click="Strikethrough_Click" ToolTip="Strikethrough"
+                    <Button x:Name="StrikethroughButton" Tag="RichOnly" Style="{StaticResource FormatButton}" Click="Strikethrough_Click" ToolTip="Strikethrough"
                             AutomationProperties.Name="Strikethrough">
                         <TextBlock Text="S" FontSize="14">
                             <TextBlock.TextDecorations><TextDecoration Location="Strikethrough"/></TextBlock.TextDecorations>

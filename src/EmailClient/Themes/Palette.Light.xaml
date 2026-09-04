@@ -30,7 +30,10 @@
     <Color x:Key="TextOnAccentColor">#FFFFFFFF</Color>
     <SolidColorBrush x:Key="TextOnAccent" Color="{StaticResource TextOnAccentColor}"/>
     <!-- Surfaces -->
-    <Color x:Key="SurfaceCardColor">#FFFFFFFF</Color>
+    <!-- A hair off pure white — same near-white family as SurfaceAlt/SurfaceApp below, just the
+         lightest step in it, so cards read as part of the same palette instead of a stark white
+         cutout against it. -->
+    <Color x:Key="SurfaceCardColor">#FFFDFCFE</Color>
     <SolidColorBrush x:Key="SurfaceCard" Color="{StaticResource SurfaceCardColor}"/>
     <Color x:Key="SurfaceAppColor">#FFF6F5F9</Color>
     <SolidColorBrush x:Key="SurfaceApp" Color="{StaticResource SurfaceAppColor}"/>

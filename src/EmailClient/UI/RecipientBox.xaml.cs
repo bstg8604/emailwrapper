@@ -76,6 +76,13 @@ public partial class RecipientBox : UserControl
     /// control also trying to commit the raw typed text as its own chip at the same time.</summary>
     public bool SuppressAutoCommit { get; set; }
 
+    /// <summary>Wired in by the owning ComposeWindow — exact-address lookup against the account's
+    /// mail-history contacts, used to tell a chip whether its address is actually someone you've
+    /// mailed before (a subtle tint when it isn't) and to fill in the click-for-details popover.
+    /// Null on sample data or before the index has anything to offer, in which case every chip just
+    /// looks the same, same as before this existed.</summary>
+    public Func<string, EmailClient.Mail.ContactEntry?>? FindContact { get; set; }
+
     /// <summary>Fires on any change a caller might care about: a chip added or removed, or the
     /// in-progress text changing — the same occasions a plain TextBox's own TextChanged would
     /// have covered, since this is what drives the recipient autocomplete's search-as-you-type.</summary>
@@ -226,6 +233,11 @@ public partial class RecipientBox : UserControl
 
     private Border BuildChip(Recipient r)
     {
+        // Null (not wired — sample data, or the index just hasn't loaded yet) means "can't tell",
+        // which stays neutral rather than flagging every chip as unknown by default.
+        var contact = FindContact?.Invoke(r.Address);
+        var isKnown = FindContact is null || contact is not null;
+
         var label = new TextBlock
         {
             Text = r.HasName ? r.DisplayName : r.Address,
@@ -234,6 +246,7 @@ public partial class RecipientBox : UserControl
             VerticalAlignment = VerticalAlignment.Center,
             TextTrimming = TextTrimming.CharacterEllipsis,
             MaxWidth = 220,
+            Cursor = Cursors.Hand,
         };
 
         var remove = new TextBlock
@@ -254,14 +267,85 @@ public partial class RecipientBox : UserControl
             e.Handled = true; // don't also let Root_MouseLeftButtonDown steal focus back to input
         };
 
-        return new Border
+        var chip = new Border
         {
-            Background = (Brush)FindResource("SurfaceHover"),
+            // A subtle warning tint, not an alarming one — mailing someone new is completely
+            // normal, this is just the same "double check this one" signal Apple Mail's own
+            // unresolved-recipient coloring gives, not a claim that anything is actually wrong.
+            Background = (Brush)FindResource(isKnown ? "SurfaceHover" : "WarningSoft"),
+            BorderBrush = System.Windows.Media.Brushes.Transparent,
+            BorderThickness = new Thickness(1.5),
             CornerRadius = new CornerRadius(11),
             Padding = new Thickness(9, 4, 8, 4),
             Margin = new Thickness(0, 2, 5, 2),
             ToolTip = r.HasName ? r.Address : null,
             Child = new StackPanel { Orientation = Orientation.Horizontal, Children = { label, remove } },
         };
+
+        label.MouseLeftButtonUp += (_, e) =>
+        {
+            ShowContactDetails(chip, r, contact);
+            e.Handled = true;
+        };
+
+        return chip;
+    }
+
+    private System.Windows.Controls.Primitives.Popup? _detailsPopup;
+
+    /// <summary>Click-to-select-and-see-details, the same gesture Apple Mail's own recipient chips
+    /// use — a light accent border marks the clicked chip as selected for as long as this popup
+    /// stays open, clearing the moment it closes (click elsewhere, Escape, or another chip).</summary>
+    private void ShowContactDetails(Border chip, Recipient r, EmailClient.Mail.ContactEntry? contact)
+    {
+        if (_detailsPopup is not null)
+            _detailsPopup.IsOpen = false;
+        chip.BorderBrush = (Brush)FindResource("ThemeAccent");
+
+        var lines = new StackPanel { Margin = new Thickness(4) };
+        lines.Children.Add(new TextBlock
+        {
+            Text = r.HasName ? r.DisplayName : r.Address,
+            FontWeight = FontWeights.SemiBold, FontSize = 12.5,
+            Foreground = (Brush)FindResource("TextPrimary"),
+        });
+        if (r.HasName)
+            lines.Children.Add(new TextBlock
+            {
+                Text = r.Address, FontSize = 11.5, Margin = new Thickness(0, 2, 0, 0),
+                Foreground = (Brush)FindResource("TextMuted"),
+            });
+        lines.Children.Add(new TextBlock
+        {
+            Text = contact is { Score: > 0 } c ? $"Corresponded {c.Score} time{(c.Score == 1 ? "" : "s")}" : "New recipient",
+            FontSize = 11.5, Margin = new Thickness(0, 6, 0, 0),
+            Foreground = (Brush)FindResource(contact is { Score: > 0 } ? "TextSecondary" : "WarningDeep"),
+        });
+
+        var popup = new System.Windows.Controls.Primitives.Popup
+        {
+            PlacementTarget = chip,
+            Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom,
+            VerticalOffset = 4,
+            StaysOpen = false,
+            AllowsTransparency = true,
+            Child = new Border
+            {
+                Background = (Brush)FindResource("SurfaceCard"),
+                BorderBrush = (Brush)FindResource("Border"),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(8),
+                Padding = new Thickness(10, 8, 10, 8),
+                MinWidth = 160,
+                Effect = new System.Windows.Media.Effects.DropShadowEffect
+                {
+                    Color = (System.Windows.Media.Color)FindResource("TextPrimaryColor"), Opacity = 0.12, BlurRadius = 14, ShadowDepth = 2,
+                },
+                Child = lines,
+            },
+        };
+        popup.Closed += (_, _) => chip.BorderBrush = System.Windows.Media.Brushes.Transparent;
+        _detailsPopup = popup;
+        popup.IsOpen = true;
     }
 }

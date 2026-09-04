@@ -245,11 +245,27 @@ public sealed class ImapMailBackend : IAsyncDisposable
     /// </summary>
     private const int LockTimeoutMs = 60_000;
 
-    private async Task<IDisposable> AcquireImapLockAsync()
+    private Task<IDisposable> AcquireImapLockAsync() => AcquireImapLockAsync(CancellationToken.None);
+
+    /// <param name="ct">Cancels only the *wait* for the lock, never a command already running under
+    /// it — a caller that's given up on its own result (see FindConversationSiblingsAsync's own
+    /// cancellation checks) can stop queuing for a connection it no longer needs without touching
+    /// whatever's currently mid-command. SemaphoreSlim.WaitAsync's own cancellation support does
+    /// exactly this safely: it only ever cancels the *waiting*, never something already granted.</param>
+    private async Task<IDisposable> AcquireImapLockAsync(CancellationToken ct)
     {
         if (ReferenceEquals(_lockHolder.Value, this))
             return NullReleaser.Instance;
-        if (!await _imapLock.WaitAsync(LockTimeoutMs))
+        bool acquired;
+        try
+        {
+            acquired = await _imapLock.WaitAsync(LockTimeoutMs, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            throw; // the caller's own cancellation — not a busy-connection timeout, don't relabel it
+        }
+        if (!acquired)
             throw new TimeoutException("The mail server connection is busy and didn't free up in time.");
         _lockHolder.Value = this;
         return new ImapLockReleaser(this);
@@ -548,6 +564,27 @@ public sealed class ImapMailBackend : IAsyncDisposable
         if (_current is null)
             return MessagePage.Empty;
 
+        // _current's own Count is whatever this connection last heard from the server — but new
+        // mail is detected on a completely separate connection (_idleClient, opened solely to sit
+        // in IDLE; see this class's own remarks on why). That connection noticing new mail and
+        // firing MailboxActivity doesn't, by itself, tell *this* connection anything — its own
+        // cached Count stays stale until something makes it ask again. A live report matched this
+        // exactly: the sidebar badge (ListFoldersAsync, which already does its own fresh
+        // StatusAsync per folder) updated the moment new mail arrived, but the message list itself
+        // didn't show it until switching folders — which works only because selecting a folder
+        // forces a real re-sync. StatusAsync here is that same fresh check, just without needing to
+        // leave and come back to trigger it.
+        try
+        {
+            await _current.StatusAsync(StatusItems.Count);
+        }
+        catch (Exception)
+        {
+            // Best-effort — if the server doesn't like a STATUS on the currently selected folder
+            // (some don't), _current.Count below just falls back to whatever this connection last
+            // knew, same as before this existed.
+        }
+
         var total = _current.Count;
         var pageCount = Math.Max(1, (int)Math.Ceiling(total / (double)PageSize));
         _page = Math.Clamp(_page, 1, pageCount);
@@ -568,7 +605,7 @@ public sealed class ImapMailBackend : IAsyncDisposable
 
         var rows = summaries
             .OrderByDescending(s => s.InternalDate ?? DateTimeOffset.MinValue)
-            .Select(ToRow)
+            .Select(s => ToRow(s))
             .ToList();
 
         return new MessagePage(rows, _page, pageCount, total, _currentMailbox);
@@ -576,98 +613,152 @@ public sealed class ImapMailBackend : IAsyncDisposable
 
     /// <summary>
     /// Every other message in the current folder that belongs to the same conversation — the whole
-    /// folder, not just whatever page happens to be loaded. Apple Mail threads a reply from months
-    /// ago into a conversation even if it isn't on the currently visible page, and a client that
-    /// only ever looks at the loaded 50 rows would silently fail to thread anything older than that.
-    /// Primarily matches on a real Message-ID/References link — the same mechanism Apple Mail's own
-    /// conversation view is actually built on — with subject text (see InboxRow.ConversationKey)
-    /// only as a fallback OR'd in alongside it, not the primary signal. That ordering matters: two
-    /// genuinely unrelated senders can share a subject by pure coincidence (or a mail gateway's
-    /// tag/course-code convention), which a subject-primary match would merge into one conversation
-    /// with no real relationship backing it — a real header link can't produce that false positive,
-    /// since it requires an actual reply/forward relationship a mail client wrote into the message
-    /// itself. Subject is kept only for the messages IMAP handed back with no usable Message-ID at
-    /// all — rare, but not worth losing all grouping over. Envelope-only fetch (no body octets)
-    /// keeps this cheap even for a large folder, matching SearchAsync's own approach.
+    /// folder, not just whatever page happens to be loaded, and not bounded to anything recent
+    /// either. Apple Mail threads a reply from months ago into a conversation even if it isn't on
+    /// the currently visible page; a client that only ever looks at the loaded 50 rows, or only a
+    /// recent window, would silently fail to thread anything older than that.
+    ///
+    /// Matches only on a real Message-ID/References link — the same mechanism Apple Mail's and
+    /// Thunderbird's own conversation views are actually built on. Deliberately no subject-text
+    /// fallback (unlike an earlier version of this method, and unlike Gmail's own conversation
+    /// view, which does fold same-subject-different-thread messages together): two genuinely
+    /// unrelated senders can share a subject by pure coincidence, or the same sender can send
+    /// several genuinely independent messages that happen to reuse one subject line (a recurring
+    /// same-subject notification, say) — subject-primary or subject-fallback matching merges those
+    /// into one conversation with no real relationship backing it. A real header link can't produce
+    /// that false positive, since it requires an actual reply/forward relationship a mail client
+    /// wrote into the message itself. The tradeoff, matching Apple Mail's own accepted limitation:
+    /// a message from a sender/client that never set a Message-ID/References header at all won't
+    /// thread — rare in practice.
+    ///
+    /// Uses the server's own SEARCH instead of fetching envelope/bodystructure for the whole folder
+    /// and filtering client-side (what this method used to do) — that full-folder fetch was the
+    /// actual cost behind every message open visibly lagging its own header, regardless of mailbox
+    /// size or whether the opened message even turned out to have any siblings at all. SEARCH lets
+    /// the server return just the matching UIDs; only those get an envelope fetch afterward.
     /// </summary>
     public async Task<IReadOnlyList<InboxRow>> FindConversationSiblingsAsync(
-        string conversationKey, string excludeId, string? openedMessageId = null,
-        IReadOnlyList<string>? openedReferences = null, int max = 8)
+        string excludeId, string? openedMessageId = null,
+        IReadOnlyList<string>? openedReferences = null, int max = 8, CancellationToken ct = default)
     {
-        using var _ = await AcquireImapLockAsync();
+        using var _ = await AcquireImapLockAsync(ct);
         await EnsureConnectedAsync();
-        if (_current is null || string.IsNullOrWhiteSpace(conversationKey))
+        if (_current is null)
             return [];
 
-        var total = _current.Count;
-        if (total == 0)
-            return [];
-
-        var envelopes = await _current.FetchAsync(0, total - 1,
-            MessageSummaryItems.Envelope | MessageSummaryItems.Flags | MessageSummaryItems.UniqueId |
-            MessageSummaryItems.InternalDate | MessageSummaryItems.BodyStructure | MessageSummaryItems.References);
-
-        // Every id either side considers "part of my thread" — the opened message's own id plus
-        // whatever it declared as its own ancestry. A candidate belongs if its own id is in that
-        // set, or if the opened message's id is in *its* ancestry — a reply can arrive before the
-        // message it's threaded to has been indexed either way round. Normalized (angle brackets
-        // stripped, trimmed) because the two sources these ids come from don't necessarily agree on
-        // that formatting: MimeMessage.MessageId/References (what openedMessageId/openedReferences
-        // are built from) always strip the <>, but IMAP's own ENVELOPE structure — where
-        // Envelope.MessageId below is read from — hands back the raw header value, brackets
-        // included. Comparing those two forms unnormalized would silently never match at all;
-        // normalizing here is what makes the two sides comparable in the first place. A degenerate
-        // id (no "@") is rejected outright — a real Message-ID always has one, so an empty/blank or
-        // otherwise malformed value some server quirk produced can't coincidentally collide across
-        // unrelated messages the way a short/blank id shared by chance could.
-        static string? NormalizeId(string? id)
-        {
-            var trimmed = id?.Trim().Trim('<', '>');
-            return string.IsNullOrEmpty(trimmed) || !trimmed.Contains('@') ? null : trimmed;
-        }
-
-        var openedIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        if (NormalizeId(openedMessageId) is { } normalizedOpenedId)
-            openedIds.Add(normalizedOpenedId);
+        // Two directions: messages that reply to the opened one (their own References header
+        // contains its Message-ID) and messages the opened one is itself a reply to (their
+        // Message-ID appears in its References list — its ancestry). Either makes them part of the
+        // same conversation. HeaderContains is a substring search, so this works regardless of
+        // whether the raw header text carries angle brackets around the id or not.
+        SearchQuery? query = null;
+        if (!string.IsNullOrWhiteSpace(openedMessageId))
+            query = SearchQuery.HeaderContains("References", openedMessageId);
         if (openedReferences is not null)
-            foreach (var r in openedReferences)
-                if (NormalizeId(r) is { } normalizedRef)
-                    openedIds.Add(normalizedRef);
-
-        bool HeaderLinked(IMessageSummary summary)
         {
-            if (openedIds.Count == 0)
-                return false;
-            if (NormalizeId(summary.Envelope?.MessageId) is { } candidateId && openedIds.Contains(candidateId))
-                return true;
-            if (summary.References is null)
-                return false;
-            var openedId = NormalizeId(openedMessageId);
-            return openedId is not null
-                && summary.References.Any(r => string.Equals(NormalizeId(r), openedId, StringComparison.OrdinalIgnoreCase));
+            foreach (var ancestorId in openedReferences)
+            {
+                if (string.IsNullOrWhiteSpace(ancestorId))
+                    continue;
+                var byAncestor = SearchQuery.HeaderContains("Message-Id", ancestorId);
+                query = query is null ? byAncestor : query.Or(byAncestor);
+            }
+        }
+        if (query is null)
+            return [];
+
+        // A conversation's messages routinely live in different folders — the received original
+        // in Inbox (or wherever it's since been filed), your own reply in Sent — so searching only
+        // the currently open folder misses the other half entirely. A live report was exactly
+        // this: opening your own sent reply from the Sent folder never found the original it
+        // replied to, since that original was never in Sent to begin with. Special mailboxes are
+        // looked up once here (not per-folder) since GetSpecialMailboxesAsync is itself a network
+        // round trip; reentrant-safe to call from inside this same lock (see AcquireImapLockAsync's
+        // own remarks on that).
+        var originalFolder = _current;
+        var special = await GetSpecialMailboxesAsync();
+        var targetMailboxes = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { originalFolder.FullName };
+        // Inbox/Sent only — not Archive too. Every extra folder here is another OpenAsync +
+        // SearchAsync + FetchAsync round trip, all serialized behind the one shared IMAP lock that
+        // every other operation (the background new-mail poll, opening the next message) also
+        // needs — on a slow link this backed up for well over a minute in practice and made the
+        // whole app appear to stop loading mail. Inbox/Sent covers the actual reported case
+        // (received-and-replied-to); Archive is comparatively rare for holding the *other* half of
+        // a conversation and not worth the extra latency here.
+        foreach (var key in new[] { "Inbox", "Sent" })
+            if (special.TryGetValue(key, out var mailbox))
+                targetMailboxes.Add(mailbox);
+
+        var results = new List<InboxRow>();
+        foreach (var mailboxName in targetMailboxes)
+        {
+            // Checked only here — between folders, never inside one — so the user having since
+            // opened a different message or switched folders stops this from starting further
+            // commands on the shared connection, without ever abandoning one already in flight
+            // (see AcquireImapLockAsync's own remarks on why that specifically is unsafe).
+            if (ct.IsCancellationRequested)
+                break;
+            if (!_foldersByMailbox.TryGetValue(mailboxName, out var folder))
+                continue;
+
+            try
+            {
+                var isOriginal = string.Equals(folder.FullName, originalFolder.FullName, StringComparison.Ordinal);
+                if (!isOriginal)
+                    await folder.OpenAsync(FolderAccess.ReadOnly);
+
+                var uids = await folder.SearchAsync(query);
+                if (uids.Count == 0)
+                    continue;
+
+                var summaries = await folder.FetchAsync(uids,
+                    MessageSummaryItems.Envelope | MessageSummaryItems.Flags | MessageSummaryItems.UniqueId |
+                    MessageSummaryItems.InternalDate | MessageSummaryItems.BodyStructure);
+
+                // Mailbox stays null for a result from the same folder the opened message is
+                // already in — matching every existing row's own assumption ("this id belongs to
+                // whatever folder is currently open") exactly, so nothing downstream needs to
+                // change for the common case. Only a genuinely cross-folder result carries an
+                // explicit mailbox, which is what tells a later attachment click or body fetch to
+                // select that folder first instead of assuming the active one.
+                results.AddRange(summaries.Select(s => ToRow(s, isOriginal ? null : folder.FullName)));
+            }
+            catch (Exception)
+            {
+                // Best-effort per folder — one folder's search failing shouldn't lose whatever the
+                // others still found. A folder that's genuinely slow to answer is bounded by the
+                // shared _imap client's own NetworkTimeoutMs on every command it issues (this is
+                // deliberately NOT wrapped in an additional client-side WaitAsync/timeout on top of
+                // that: MailKit's ImapClient issues one command at a time on one connection, and
+                // walking away from an awaited call before MailKit itself considers the command
+                // finished leaves that command still in flight against the shared connection —
+                // whatever this method (or the next caller waiting on the same lock) issues next
+                // then races an unread response still arriving from the abandoned command, which
+                // is exactly the kind of protocol desync that can wedge every subsequent operation
+                // on this connection until the app is restarted. NetworkTimeoutMs already aborts
+                // and cleans up a genuinely stuck command safely at the MailKit/socket level, which
+                // is the only place that's actually safe to do it from.
+            }
         }
 
-        // Primary signal, matching how Apple Mail's own conversation view actually threads — a real
-        // Message-ID/References relationship, not text-matching a subject line that two genuinely
-        // unrelated senders can share by pure coincidence. Subject match stays as a fallback (OR'd
-        // in, not required) for the messages IMAP handed back with no usable Message-ID at all —
-        // rare, but not worth losing all grouping over.
-        var matches = envelopes
-            .Select(e => (Row: ToRow(e), Summary: e))
-            .Where(x => x.Row.Id != excludeId && (HeaderLinked(x.Summary) || x.Row.ConversationKey == conversationKey))
-            .ToList();
-
-        foreach (var (row, summary) in matches)
+        // Searching the other folders above moved the connection's own selected mailbox away from
+        // the one the rest of the app still thinks is active — every other method on this class
+        // assumes _current reflects that. Restored unconditionally rather than only when it looks
+        // like it drifted, since that's one fewer thing that can be gotten subtly wrong.
+        try
         {
-            Log.Info($"Conversation sibling matched — id={row.Id} subject=\"{row.Subject}\" "
-                + $"viaSubject={row.ConversationKey == conversationKey} viaHeader={HeaderLinked(summary)} "
-                + $"candidateMessageId=\"{summary.Envelope?.MessageId}\" "
-                + $"candidateReferences=[{(summary.References is null ? "" : string.Join(", ", summary.References))}] "
-                + $"openedMessageId=\"{openedMessageId}\" openedReferences=[{(openedReferences is null ? "" : string.Join(", ", openedReferences))}]");
+            await originalFolder.OpenAsync(FolderAccess.ReadWrite);
+            _current = originalFolder;
+        }
+        catch (Exception)
+        {
+            // If re-selecting the original folder itself fails, EnsureConnectedAsync's own
+            // reconnect path (every other method already goes through it) will recover from
+            // whatever's wrong the next time anything is asked of this connection.
         }
 
-        return matches
-            .Select(x => x.Row)
+        return results
+            .Where(r => r.Id != excludeId)
             .OrderByDescending(r => r.Timestamp ?? DateTime.MinValue)
             .Take(max)
             .ToList();
@@ -745,7 +836,7 @@ public sealed class ImapMailBackend : IAsyncDisposable
         return summaries
             .Where(s => EnvelopeOperatorsMatch(s.Envelope, parsed) && FlagOperatorsMatch(s, parsed))
             .OrderByDescending(s => s.InternalDate ?? DateTimeOffset.MinValue)
-            .Select(ToRow)
+            .Select(s => ToRow(s))
             .ToList();
     }
 
@@ -804,7 +895,11 @@ public sealed class ImapMailBackend : IAsyncDisposable
             m.Name?.Contains(query, StringComparison.OrdinalIgnoreCase) == true
             || m.Address.Contains(query, StringComparison.OrdinalIgnoreCase)) == true;
 
-    private static InboxRow ToRow(IMessageSummary summary)
+    /// <param name="mailbox">Null for the common case — a row from whatever folder is currently
+    /// open. Set only by a caller (FindConversationSiblingsAsync) that fetched this summary from a
+    /// *different* folder, so later operations on this specific row know to select that folder
+    /// first — see InboxRow.Mailbox's own remarks.</param>
+    private static InboxRow ToRow(IMessageSummary summary, string? mailbox = null)
     {
         var when = (summary.InternalDate ?? DateTimeOffset.Now).LocalDateTime;
         var from = summary.Envelope?.From?.Mailboxes?.FirstOrDefault();
@@ -820,7 +915,8 @@ public sealed class ImapMailBackend : IAsyncDisposable
             Starred: summary.Flags?.HasFlag(MessageFlags.Flagged) ?? false,
             HasAttachment: HasAttachments(summary.Body),
             Timestamp: when,
-            SenderAddress: from?.Address ?? "");
+            SenderAddress: from?.Address ?? "",
+            Mailbox: mailbox);
     }
 
     private static bool HasAttachments(BodyPart? part) => part switch
@@ -905,13 +1001,36 @@ public sealed class ImapMailBackend : IAsyncDisposable
         }
     }
 
-    public async Task<MessageDetail?> OpenMessageAsync(string id)
+    /// <param name="mailbox">Null for the common case — fetches from whichever folder is already
+    /// open. Set only for a cross-folder conversation sibling (see InboxRow.Mailbox), in which
+    /// case this temporarily selects that folder, fetches, and restores whatever was selected
+    /// before — IMAP's GetMessageAsync always operates on the currently selected folder, not one
+    /// named on the call itself.</param>
+    public async Task<MessageDetail?> OpenMessageAsync(string id, string? mailbox = null, CancellationToken ct = default)
     {
         if (_current is null || !uint.TryParse(id, out var idValue))
             return null;
-        using var _ = await AcquireImapLockAsync();
+        using var _ = await AcquireImapLockAsync(ct);
         await EnsureConnectedAsync();
         var uid = new UniqueId(idValue);
+
+        var originalFolder = _current;
+        var switchingFolder = mailbox is not null
+            && !string.Equals(mailbox, originalFolder.FullName, StringComparison.Ordinal);
+        if (switchingFolder)
+        {
+            if (!_foldersByMailbox.TryGetValue(mailbox!, out var target))
+                return null;
+            try
+            {
+                await target.OpenAsync(FolderAccess.ReadOnly);
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+            _current = target;
+        }
 
         MimeMessage message;
         try
@@ -922,13 +1041,29 @@ public sealed class ImapMailBackend : IAsyncDisposable
         {
             return null;
         }
+        finally
+        {
+            if (switchingFolder)
+            {
+                try { await originalFolder.OpenAsync(FolderAccess.ReadWrite); }
+                catch (Exception) { /* EnsureConnectedAsync's own reconnect path recovers next call */ }
+                _current = originalFolder;
+            }
+        }
 
-        _cachedUid = uid;
-        _cachedMessage = message;
-        return BuildMessageDetail(message, uid);
+        // Not cached for a cross-folder fetch — _cachedUid/_cachedMessage exist so a download
+        // right after opening a message doesn't need a second round trip, but that shortcut only
+        // makes sense relative to whichever folder _current represents *now*, which a cross-folder
+        // fetch has already restored away from the one this message actually came from.
+        if (!switchingFolder)
+        {
+            _cachedUid = uid;
+            _cachedMessage = message;
+        }
+        return BuildMessageDetail(message, uid, mailbox);
     }
 
-    private static MessageDetail BuildMessageDetail(MimeMessage message, UniqueId uid)
+    private static MessageDetail BuildMessageDetail(MimeMessage message, UniqueId uid, string? mailbox = null)
     {
         var attachments = new List<MailAttachment>();
         var index = 0;
@@ -938,7 +1073,13 @@ public sealed class ImapMailBackend : IAsyncDisposable
             var size = part.Content?.Stream is { } stream
                 ? AttachmentViewerWindow.FormatSize(stream.Length)
                 : "";
-            attachments.Add(new MailAttachment(name, size, $"imap:{uid.Id}:{index}"));
+            // A different scheme ("imapx", not "imap") when a mailbox is carried, rather than a
+            // 3-vs-4-part ambiguity in the same scheme — DownloadAttachmentAsync tells the two
+            // apart by scheme alone, so there's nothing to misparse. Only ever set for a
+            // cross-folder conversation sibling (see InboxRow.Mailbox); every attachment on a
+            // message opened normally keeps the exact URL format already in use everywhere else.
+            var url = mailbox is null ? $"imap:{uid.Id}:{index}" : $"imapx:{mailbox}:{uid.Id}:{index}";
+            attachments.Add(new MailAttachment(name, size, url));
             index++;
         }
 
@@ -1298,6 +1439,17 @@ public sealed class ImapMailBackend : IAsyncDisposable
         AddAddresses(message.Bcc, result.Bcc, warnings);
         message.Subject = result.Subject;
 
+        // The actual RFC 5322 threading headers — without these, a sent reply carries no link back
+        // to what it replied to at all, so opening it later (in Sent, or from another client/
+        // device entirely) can never find the original as part of the same conversation. Null for
+        // a fresh message or a forward (see ComposeResult's own remarks on why forwards don't set
+        // these).
+        if (!string.IsNullOrWhiteSpace(result.InReplyTo))
+            message.InReplyTo = result.InReplyTo;
+        if (result.References is { Count: > 0 })
+            foreach (var reference in result.References)
+                message.References.Add(reference);
+
         var builder = new BodyBuilder();
         if (!string.IsNullOrWhiteSpace(result.BodyHtml))
         {
@@ -1331,6 +1483,20 @@ public sealed class ImapMailBackend : IAsyncDisposable
     {
         if (string.IsNullOrWhiteSpace(raw))
             return;
+
+        // A real address-list parse first — respects a quoted display name's own comma ("Doe, John"
+        // <j@x.com> is valid RFC 5322) the way splitting on every literal comma doesn't. Without
+        // this, a recipient like that silently split into two pieces here — one a dangling,
+        // unparseable fragment that got reported as an invalid address and dropped, meaning that
+        // recipient never received the message at all with no clear indication why. Falls back to
+        // splitting on comma/semicolon (Outlook's own convention for a pasted list) only when the
+        // whole string doesn't parse cleanly as one real address list.
+        if (InternetAddressList.TryParse(raw, out var parsed) && parsed.Count > 0)
+        {
+            list.AddRange(parsed);
+            return;
+        }
+
         foreach (var part in raw.Split(',', ';'))
         {
             var trimmed = part.Trim();
@@ -1459,10 +1625,28 @@ public sealed class ImapMailBackend : IAsyncDisposable
     /// </summary>
     public async Task<string?> DownloadAttachmentAsync(MailAttachment attachment, string targetPath)
     {
+        // Two URL shapes: "imap:{uid}:{index}" for the common case (whatever folder is currently
+        // open), and "imapx:{mailbox}:{uid}:{index}" for an attachment on a cross-folder
+        // conversation sibling (see InboxRow.Mailbox and BuildMessageDetail's own remarks on why
+        // the scheme itself, not just the part count, is what tells them apart).
         var parts = attachment.Url.Split(':');
-        if (parts.Length != 3 || parts[0] != "imap" || !uint.TryParse(parts[1], out var uidValue)
-            || !int.TryParse(parts[2], out var index))
+        string? mailbox = null;
+        uint uidValue;
+        int index;
+        if (parts.Length == 3 && parts[0] == "imap"
+            && uint.TryParse(parts[1], out uidValue) && int.TryParse(parts[2], out index))
+        {
+            // mailbox stays null — falls through to _current below, exactly as before this existed.
+        }
+        else if (parts.Length == 4 && parts[0] == "imapx"
+            && uint.TryParse(parts[2], out uidValue) && int.TryParse(parts[3], out index))
+        {
+            mailbox = parts[1];
+        }
+        else
+        {
             return null;
+        }
 
         var uid = new UniqueId(uidValue);
         // Locked before even reading _cachedUid/_cachedMessage, not just around the re-fetch below:
@@ -1472,11 +1656,24 @@ public sealed class ImapMailBackend : IAsyncDisposable
         // previously-open one was still in flight. That silently saved the wrong message's attachment
         // bytes under the requested filename, with no error surfaced.
         using var _ = await AcquireImapLockAsync();
-        var message = _cachedUid == uid ? _cachedMessage : null;
+        var message = mailbox is null && _cachedUid == uid ? _cachedMessage : null;
         if (message is null)
         {
             if (_current is null)
                 return null;
+
+            var originalFolder = _current;
+            var switchingFolder = mailbox is not null
+                && !string.Equals(mailbox, originalFolder.FullName, StringComparison.Ordinal);
+            if (switchingFolder)
+            {
+                if (!_foldersByMailbox.TryGetValue(mailbox!, out var target))
+                    return null;
+                try { await target.OpenAsync(FolderAccess.ReadOnly); }
+                catch (Exception) { return null; }
+                _current = target;
+            }
+
             try
             {
                 message = await _current.GetMessageAsync(uid);
@@ -1484,6 +1681,15 @@ public sealed class ImapMailBackend : IAsyncDisposable
             catch (Exception)
             {
                 return null;
+            }
+            finally
+            {
+                if (switchingFolder)
+                {
+                    try { await originalFolder.OpenAsync(FolderAccess.ReadWrite); }
+                    catch (Exception) { /* EnsureConnectedAsync's own reconnect path recovers next call */ }
+                    _current = originalFolder;
+                }
             }
         }
 

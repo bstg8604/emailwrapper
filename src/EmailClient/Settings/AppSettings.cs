@@ -37,6 +37,18 @@ public sealed class AppSettings
     public double AccountWindowWidth { get; set; } = 640;
     public double AccountWindowHeight { get; set; } = 520;
 
+    /// <summary>The message list's own column width, dragged via the GridSplitter between it and
+    /// the reading pane — remembered across sessions the same way every other window/pane bound
+    /// here is. 360 matches MainWindow.xaml's own default column width. A live report asked for a
+    /// way back to that default after dragging it around; MainWindow.ResetPanelSizes() is what
+    /// that reset button in Settings actually calls.</summary>
+    public double MessageListColumnWidth { get; set; } = 360;
+
+    /// <summary>Full path to a specific browser's .exe to open links/media in, or null/empty to use
+    /// whatever Windows has set as the default browser (the previous, only behavior). See
+    /// BrowserLauncher.Open.</summary>
+    public string? BrowserPath { get; set; }
+
     /// <summary>
     /// Legacy single signature field, kept only so settings.json files written before named/multiple
     /// signatures existed still migrate correctly — see <see cref="Load"/>. New code should read
@@ -87,8 +99,7 @@ public sealed class AppSettings
     /// </summary>
     public bool TrayHintShown { get; set; }
 
-    private static string DataDir =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IITBWebmailWrapper");
+    private static string DataDir => AppDataPaths.Root;
 
     private static string SettingsPath => Path.Combine(DataDir, "settings.json");
 

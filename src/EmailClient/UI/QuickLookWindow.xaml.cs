@@ -4,6 +4,7 @@ using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
+using EmailClient.Diagnostics;
 
 namespace EmailClient.UI;
 
@@ -91,8 +92,9 @@ public partial class QuickLookWindow : Window
             ImageArea.MaxWidth = work.Width * 0.94 - ShadowMarginWidth;
             ImageArea.MaxHeight = work.Height * 0.9 - ShadowMarginHeight;
         }
-        catch (Exception)
+        catch (Exception ex)
         {
+            Log.Warn($"Rendering image preview for '{_filePath}' failed", ex);
             FileSizeText.Text = "Couldn't render this image";
         }
 
@@ -199,8 +201,7 @@ public partial class QuickLookWindow : Window
         }
         catch (Exception ex)
         {
-            System.Windows.MessageBox.Show(this, $"Couldn't save the file: {ex.Message}", "Save failed",
-                MessageBoxButton.OK, MessageBoxImage.Warning);
+            ConfirmDialog.Alert(this, "Save failed", $"Couldn't save the file: {ex.Message}");
         }
     }
 
@@ -212,8 +213,7 @@ public partial class QuickLookWindow : Window
         }
         catch (Exception ex)
         {
-            System.Windows.MessageBox.Show(this, $"Couldn't open the file: {ex.Message}", "Open failed",
-                MessageBoxButton.OK, MessageBoxImage.Warning);
+            ConfirmDialog.Alert(this, "Open failed", $"Couldn't open the file: {ex.Message}");
         }
     }
 

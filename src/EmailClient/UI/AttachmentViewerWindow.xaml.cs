@@ -5,6 +5,7 @@ using System.Net;
 using System.Windows;
 using System.Windows.Input;
 using System.Xml.Linq;
+using EmailClient.Diagnostics;
 
 namespace EmailClient.UI;
 
@@ -142,6 +143,18 @@ public partial class AttachmentViewerWindow : Window
                 }
                 else
                 {
+                    // Past NavigateToString's own ~2MB size limit (a raw image already this big
+                    // becomes even larger once base64-encoded), so this falls back to a direct
+                    // file:// navigation instead — the one departure from "every attachment either
+                    // goes through the safe data-URI path or a browser-native viewer (PDF) that
+                    // doesn't execute the file's own content as a webpage". A file whose real
+                    // content is HTML/script but is merely *named* with an image extension (renamed
+                    // past the size threshold specifically to reach this branch) would otherwise run
+                    // with script enabled — this window's default. Script is safe to turn off here
+                    // specifically: an image extension can only ever reach this branch, never the
+                    // .pdf one below (this method returns right after), so Edge's own PDF viewer
+                    // (which needs script for its own UI) is untouched.
+                    Viewer.CoreWebView2.Settings.IsScriptEnabled = false;
                     Viewer.CoreWebView2.Navigate(new Uri(_filePath).AbsoluteUri);
                 }
                 return;
@@ -175,6 +188,7 @@ public partial class AttachmentViewerWindow : Window
         }
         catch (Exception ex)
         {
+            Log.Warn($"Rendering attachment preview for '{_filePath}' failed", ex);
             ShowFallback("Couldn't open this attachment", ex.Message);
         }
     }
@@ -332,8 +346,7 @@ public partial class AttachmentViewerWindow : Window
         }
         catch (Exception ex)
         {
-            System.Windows.MessageBox.Show(this, $"Couldn't save the file: {ex.Message}", "Save failed",
-                MessageBoxButton.OK, MessageBoxImage.Warning);
+            ConfirmDialog.Alert(this, "Save failed", $"Couldn't save the file: {ex.Message}");
         }
     }
 
@@ -347,8 +360,7 @@ public partial class AttachmentViewerWindow : Window
         }
         catch (Exception ex)
         {
-            System.Windows.MessageBox.Show(this, $"Couldn't open the file: {ex.Message}", "Open failed",
-                MessageBoxButton.OK, MessageBoxImage.Warning);
+            ConfirmDialog.Alert(this, "Open failed", $"Couldn't open the file: {ex.Message}");
         }
     }
 

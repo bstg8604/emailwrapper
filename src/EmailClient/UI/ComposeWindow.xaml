@@ -542,20 +542,25 @@
 
             <!-- Body: rich editor, or a plain TextBox when plain-text mode is on -->
             <Grid Grid.Row="3" Margin="20,8,20,0">
-                <Border BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" CornerRadius="8" ClipToBounds="True">
-                    <Grid>
-                        <!-- The editor must not swallow file drops; the window handles them as
-                             attachments rather than letting WebView2 navigate to the file. -->
-                        <wv2:WebView2 x:Name="RichEditor" AllowExternalDrop="False"/>
-                        <TextBox x:Name="PlainEditor" Visibility="Collapsed" BorderThickness="0" FontSize="13.5"
-                                 Padding="12" AcceptsReturn="True" TextWrapping="Wrap" Cursor="IBeam"
-                                 VerticalScrollBarVisibility="Auto" SpellCheck.IsEnabled="True"
-                                 AutomationProperties.Name="Message body"/>
-                    </Grid>
-                </Border>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
 
-                <!-- Slides in when inserting a link, instead of a modal prompt -->
-                <Border x:Name="LinkBar" Visibility="Collapsed" VerticalAlignment="Top" Margin="12"
+                <!-- Its own row, ABOVE the editor — not overlaid on top of it. WebView2 is a real
+                     windowed (HWND-backed) control, and Windows always paints a windowed control
+                     above every other WPF element sharing its window, completely ignoring XAML
+                     z-order/Panel.ZIndex — the well-known WPF "airspace" limitation. This bar used
+                     to be a same-Grid-cell overlay sibling of RichEditor below, which meant it was
+                     doing everything right in code (Visibility, the slide-in animation) while being
+                     silently painted underneath the editor's own HWND the entire time — a live
+                     report confirmed exactly that: clicking the toolbar button never visibly showed
+                     anything, because there was never a compositing layer WebView2 could actually be
+                     drawn under. Living in its own row instead — genuinely above the editor's row,
+                     not sharing space with it — sidesteps the airspace problem entirely rather than
+                     fighting it. Visibility="Collapsed" collapses this Auto row to zero height, same
+                     as every other conditionally-shown row in this app. -->
+                <Border x:Name="LinkBar" Grid.Row="0" Visibility="Collapsed" Margin="0,0,0,8"
                         Background="{DynamicResource SurfaceCard}" CornerRadius="8" Padding="10,8" BorderBrush="{DynamicResource AccentSoft}" BorderThickness="1">
                     <Border.Effect>
                         <DropShadowEffect Color="{DynamicResource TextPrimaryColor}" Opacity="0.12" BlurRadius="14" ShadowDepth="2"/>
@@ -569,6 +574,18 @@
                                 AutomationProperties.Name="Insert link address" Click="InsertLink_Click"/>
                         <Button Style="{StaticResource TextActionButton}" Content="Cancel" Click="CancelLink_Click"/>
                     </StackPanel>
+                </Border>
+
+                <Border Grid.Row="1" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" CornerRadius="8" ClipToBounds="True">
+                    <Grid>
+                        <!-- The editor must not swallow file drops; the window handles them as
+                             attachments rather than letting WebView2 navigate to the file. -->
+                        <wv2:WebView2 x:Name="RichEditor" AllowExternalDrop="False"/>
+                        <TextBox x:Name="PlainEditor" Visibility="Collapsed" BorderThickness="0" FontSize="13.5"
+                                 Padding="12" AcceptsReturn="True" TextWrapping="Wrap" Cursor="IBeam"
+                                 VerticalScrollBarVisibility="Auto" SpellCheck.IsEnabled="True"
+                                 AutomationProperties.Name="Message body"/>
+                    </Grid>
                 </Border>
             </Grid>
 
@@ -665,27 +682,6 @@
                             <TextBlock Text="&#xE724;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
                                        FontSize="12" Margin="8,0,0,0" VerticalAlignment="Center"/>
                         </StackPanel>
-                    </Button>
-                    <!-- Gmail's own split-button convention for schedule send — a narrow dropdown
-                         arrow right against Send, rather than a separate full-width button, since
-                         this is a variant of sending, not an equally-weighted alternative action. -->
-                    <Button x:Name="ScheduleSendButton" Width="26" Padding="0" Margin="1,0,0,0"
-                            Background="{DynamicResource ThemeAccent}" Foreground="{DynamicResource SurfaceCard}"
-                            BorderThickness="0" Cursor="Hand" Click="ScheduleSendButton_Click"
-                            ToolTip="Schedule send" AutomationProperties.Name="Schedule send">
-                        <Button.Template>
-                            <ControlTemplate TargetType="Button">
-                                <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="7">
-                                    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                                </Border>
-                                <ControlTemplate.Triggers>
-                                    <Trigger Property="IsMouseOver" Value="True">
-                                        <Setter TargetName="Bd" Property="Opacity" Value="0.88"/>
-                                    </Trigger>
-                                </ControlTemplate.Triggers>
-                            </ControlTemplate>
-                        </Button.Template>
-                        <TextBlock Text="&#xE70D;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="9"/>
                     </Button>
                 </StackPanel>
             </Grid>

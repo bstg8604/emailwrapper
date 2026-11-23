@@ -12,7 +12,7 @@
 ; external dependency left is the WebView2 runtime (checked for below).
 
 #define AppName        "Purplemail"
-#define AppVersion     "1.0.23"
+#define AppVersion     "1.0.81"
 #define AppPublisher   "Purplemail"
 #define AppExe         "Purplemail.exe"
 #define SourceDir      "..\dist\publish"
@@ -83,8 +83,8 @@ Filename: "{app}\{#AppExe}"; Description: "Launch {#AppName}"; Flags: nowait pos
 
 [UninstallDelete]
 ; The Run entry is removed by uninstall via uninsdeletevalue above. Deliberately NOT deleting
-; %LOCALAPPDATA%\IITBWebmailWrapper — that holds the user's settings, signatures, contacts and
-; saved account. An uninstall that silently destroys those is a bad surprise on a reinstall.
+; %LOCALAPPDATA%\Purplemail — that holds the user's settings, signatures, contacts and saved
+; account. An uninstall that silently destroys those is a bad surprise on a reinstall.
 Type: dirifempty; Name: "{app}"
 
 [Code]

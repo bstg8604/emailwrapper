@@ -97,11 +97,27 @@ public partial class MainWindow
         // to start (see RestartBackgroundMailWork's own remarks).
         RestartBackgroundMailWork();
 
+        // Captured as a local — NOT read back from _currentFolder later in this method, which is a
+        // plain mutable field a *later* click can (and, racing with this one, sometimes does)
+        // overwrite before this call's own IMAP fetch has come back. See requestId's own remarks
+        // just below for the actual failure this guards against.
+        var requestId = ++_folderRequestSeq;
+        var openedFolder = folder;
+
         _currentFolder = folder;
         HighlightFolder(folder);
         ResetReadingPane();
         ClearSelection();
         ResetQuickFilter();
+        // The previous folder's rows must not keep showing while this one loads — a live report was
+        // exactly this: switching folders left the old folder's messages on screen (with the sidebar
+        // already highlighting the new one) until the fetch below finished, reading as stale/wrong
+        // data rather than a loading state. Cleared unconditionally, even when the new folder's data
+        // turns out to already be synced and loads near-instantly — a brief empty flash is a far
+        // less confusing failure mode than showing the wrong folder's mail.
+        ReplaceMessages([]);
+        UpdatePagerBar();
+        UpdateListEmptyState(overrideText: UseMockData ? null : "Loading…");
 
         // A search result set is specific to the folder it was run in — leaving it showing after
         // switching folders would mean the list is silently still filtered to a different folder's
@@ -118,6 +134,33 @@ public partial class MainWindow
             return;
         }
 
+        // Paint whatever MailStore already has for this folder right away — before the debounce and
+        // SelectFolderAsync below, which exist to protect the *live IMAP* round trip from a burst of
+        // clicks, not to gate data that's already sitting on disk. Same reasoning as the message-open
+        // debounce fix: local data costs nothing to show immediately, and this early paint gets
+        // silently reconciled (usually with identical data, no visible flicker) once the real fetch
+        // below completes.
+        var earlyMailbox = SpecialMailbox(folder);
+        if (TryLocalPage(earlyMailbox, 1) is { } earlyPage)
+        {
+            ReplaceMessages(SortRows(earlyPage.Rows));
+            UpdatePagerBar();
+            UpdateListEmptyState();
+            StatusText.Text = DescribePage(earlyPage);
+        }
+
+        // Same reasoning as MessageList_SelectionChanged's own debounce: clicking through several
+        // folders fast used to queue one SelectFolderAsync + ListMessagesAsync pair per click, all
+        // serialized behind the one shared IMAP connection. Letting a fast run of clicks collapse
+        // into just the last one avoids both the wasted round trips and — more importantly — the
+        // window in which one click's SelectFolderAsync can repoint the connection's selected
+        // mailbox out from under an earlier click's still-in-flight ListMessagesAsync, which used to
+        // let that earlier call's results (a different folder's messages entirely) get applied to
+        // the list and saved to disk under the wrong folder's cache key.
+        await Task.Delay(150);
+        if (requestId != _folderRequestSeq)
+            return;
+
         var mailbox = SpecialMailbox(folder);
         StatusText.Text = $"Opening {FolderDisplayName(folder)}…";
         try
@@ -127,8 +170,18 @@ public partial class MainWindow
                 StatusText.Text = $"Couldn't open {FolderDisplayName(folder)} — it may no longer exist";
                 return;
             }
+            // A later folder switch may have already repointed the shared connection's selected
+            // mailbox (and started its own load) by the time this SelectFolderAsync call above
+            // actually returns — this call's own fetch would then read the *wrong* folder's
+            // messages back. Bailing out here, rather than only after the fetch, also skips the
+            // pointless StartIdleMonitor/ListMessagesAsync work for a folder switch nobody needs
+            // the result of anymore.
+            if (requestId != _folderRequestSeq)
+                return;
             _mail.StartIdleMonitor(mailbox);
-            await RefreshMessagesAsync();
+            _idleWatchedMailbox = mailbox;
+            await RefreshMessagesAsync(folderRequestId: requestId, expectedFolder: openedFolder);
+            _syncEngine?.TriggerImmediateSync(mailbox);
         }
         catch (SessionExpiredException)
         {
@@ -215,9 +268,15 @@ public partial class MainWindow
         UpdateListEmptyState();
     }
 
-    private void UpdateListEmptyState()
+    /// <param name="overrideText">Set only by a caller that knows a fetch is genuinely still in
+    /// flight (right now, just GoToFolderAsync) — "No messages" is a claim about the folder itself,
+    /// and showing it for the split second between clearing the old folder's rows and the new
+    /// folder's own data arriving reads as "this folder is empty" when it's really just loading.
+    /// RefreshMessagesAsync's own later call (no override) puts the real text back once there's an
+    /// actual answer either way.</param>
+    private void UpdateListEmptyState(string? overrideText = null)
     {
-        ListEmptyState.Text = UseMockData ? "Sign in to view your mailbox" : "No messages";
+        ListEmptyState.Text = overrideText ?? (UseMockData ? "Sign in to view your mailbox" : "No messages");
         ListEmptyState.Visibility = _messagesView.IsEmpty ? Visibility.Visible : Visibility.Collapsed;
     }
 
@@ -352,6 +411,14 @@ public partial class MainWindow
     // ---- Sender avatars (BIMI logo when the sender's domain publishes one, else the existing
     // colored-initial fallback already drawn in XAML underneath these) --------------------------
 
+    // Turned off per explicit feedback: with the large majority of real mail coming from one
+    // domain (IITB) that does publish a BIMI logo, seeing the same institute crest next to nearly
+    // every row read as odd rather than useful — the colored-initial fallback (still drawn
+    // underneath, in XAML) is what actually shows now. The lookup/render machinery in
+    // AvatarService is left intact rather than deleted, in case this is worth revisiting as an
+    // opt-in setting later.
+    private const bool ShowDomainAvatars = false;
+
     private void MessageRowAvatar_DataContextChanged(object sender, DependencyPropertyChangedEventArgs e)
     {
         if (sender is not FrameworkElement root || root.DataContext is not InboxRow row)
@@ -365,7 +432,7 @@ public partial class MainWindow
         image.Visibility = Visibility.Collapsed;
         badge.Visibility = Visibility.Collapsed;
 
-        if (UseMockData || string.IsNullOrEmpty(row.SenderAddress))
+        if (!ShowDomainAvatars || UseMockData || string.IsNullOrEmpty(row.SenderAddress))
             return;
         _ = ApplyAvatarAsync(row.SenderAddress, image, badge);
     }
@@ -485,6 +552,13 @@ public partial class MainWindow
                 if (!await _mail!.MoveToFolderAsync(id, targetMailbox))
                     continue;
                 undo = ids.Count == 1 ? _mail.ConsumeLastMove() : null;
+                // Same reasoning as RemoveMessageAsync's own delete/archive write-through — without
+                // this, a moved message's local row is still filed under its old folder until the
+                // next background sync sweep happens to notice, and a folder switch back to it in
+                // the meantime reads that stale row right off local disk (a live report: dragging a
+                // message out of Inbox, then leaving and returning to Inbox before the next sync
+                // still showed it there).
+                _mailStore?.DeleteMessage(SpecialMailbox(_currentFolder), id);
                 RemoveMessageEverywhere(id);
                 moved++;
             }
@@ -562,6 +636,13 @@ public partial class MainWindow
                     messageIdHeader: _cache?.LoadDetail(row.Id)?.MessageId)))
             return;
 
+        var mailboxForFlag = SpecialMailbox(_currentFolder);
+        _mailStore?.UpdateFlags(mailboxForFlag, row.Id, unread: unread);
+        // Same reasoning as the reading-pane's own optimistic decrement (MessageList_SelectionChanged)
+        // — MailStore's local unread_count must reflect this before UpdateInboxBadge's fire-and-forget
+        // refresh reads it, or that refresh stomps the badge right back to the pre-toggle number.
+        if (row.Unread != unread)
+            _mailStore?.AdjustFolderUnread(mailboxForFlag, unread ? 1 : -1);
         UpdateRow(row.Id, r => r with { Unread = unread });
         UpdateInboxBadge();
         _messagesView.Refresh();
@@ -649,8 +730,31 @@ public partial class MainWindow
             return;
         }
 
+        // Optimistic: pull every selected row off the list immediately — same reasoning as
+        // RemoveMessageAsync's own optimistic update — rather than only after each one's own IMAP
+        // round trip comes back, which used to make "move to folder" read as unresponsive. Any id
+        // that doesn't actually make it to the server below gets reinserted afterward.
+        var originFolder = _currentFolder;
+        var rowsById = ids
+            .Select(id => _folderData.Values.SelectMany(r => r).FirstOrDefault(r => r.Id == id)
+                ?? _messages.FirstOrDefault(r => r.Id == id))
+            .Where(r => r is not null)
+            .Cast<InboxRow>()
+            .ToDictionary(r => r.Id);
+        var wasOpen = _openRow is not null && ids.Contains(_openRow.Id);
+        var openMessageId = wasOpen ? _openDetail?.MessageId : null;
+        foreach (var id in ids)
+            RemoveMessageEverywhere(id);
+        ClearSelection();
+        if (wasOpen)
+            ResetReadingPane();
+        ApplyCurrentFolderView();
+        UpdateInboxBadge();
+
         var moved = 0;
         var attempted = 0;
+        var succeededIds = new HashSet<string>();
+        var queuedOfflineIds = new HashSet<string>();
         // Only the single-message case gets an Undo offer — ConsumeLastMove only ever holds the
         // *most recent* move, so a bulk move would need to track one MoveUndo per message to undo
         // the whole batch; not worth the extra bookkeeping for how rarely "move" is used in bulk.
@@ -663,7 +767,9 @@ public partial class MainWindow
                 if (!await _mail!.MoveToFolderAsync(id, mailbox))
                     continue;
                 undo = ids.Count == 1 ? _mail.ConsumeLastMove() : null;
-                RemoveMessageEverywhere(id);
+                // See FolderDrop's own remarks — same write-through, same reason.
+                _mailStore?.DeleteMessage(SpecialMailbox(originFolder), id);
+                succeededIds.Add(id);
                 moved++;
             }
             StatusText.Text = moved == ids.Count ? $"Moved {moved} to {label}" : $"Moved {moved} of {ids.Count} to {label}";
@@ -675,13 +781,14 @@ public partial class MainWindow
         catch (Exception ex) when (IsConnectivityException(ex))
         {
             // Whatever didn't move yet gets queued for replay; anything already moved above stays
-            // moved (RemoveMessageEverywhere already ran for those, so re-queueing them would just
-            // move them a second time once back online).
+            // moved. The row already left the UI in the optimistic pass above, so this just needs to
+            // keep MailStore in agreement rather than removing it a second time.
             foreach (var id in ids.Skip(attempted - 1))
             {
                 _offlineActions?.Add(OfflineActionKind.Move, id, mailbox,
-                    messageIdHeader: (_openRow?.Id == id ? _openDetail?.MessageId : null) ?? _cache?.LoadDetail(id)?.MessageId);
-                RemoveMessageEverywhere(id);
+                    messageIdHeader: (id == _openRow?.Id ? openMessageId : null) ?? _cache?.LoadDetail(id)?.MessageId);
+                _mailStore?.DeleteMessage(SpecialMailbox(originFolder), id);
+                queuedOfflineIds.Add(id);
                 moved++;
             }
             StatusText.Text = $"Moved {moved} to {label} — you're offline, this will sync once you're back online";
@@ -689,6 +796,21 @@ public partial class MainWindow
         catch (Exception ex)
         {
             StatusText.Text = $"Move failed: {ex.Message}";
+        }
+
+        // Anything that neither reached the server nor got queued offline is still gone from the
+        // list from the optimistic pass above — put it back rather than silently losing it.
+        var toRestore = ids.Where(id => !succeededIds.Contains(id) && !queuedOfflineIds.Contains(id)).ToList();
+        if (toRestore.Count > 0 && _folderData.TryGetValue(originFolder, out var originRows))
+        {
+            foreach (var id in toRestore)
+            {
+                if (rowsById.TryGetValue(id, out var row))
+                    originRows.Insert(0, row);
+            }
+            if (originFolder == _currentFolder)
+                ApplyCurrentFolderView();
+            UpdateInboxBadge();
         }
 
         if (undo is { } move)

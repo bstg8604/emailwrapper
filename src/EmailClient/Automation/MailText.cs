@@ -108,6 +108,17 @@ public static class MailText
         return open >= 0 && close > open ? address[(open + 1)..close].Trim() : address.Trim();
     }
 
+    /// <summary>The first address in a comma/semicolon-separated recipient list — used by Reply
+    /// (never Reply-All) on a message you sent yourself, where the original recipient takes the
+    /// place a normal reply's "the sender" would: a single addressee, not everyone who was on it.</summary>
+    public static string FirstRecipient(string? list)
+    {
+        if (string.IsNullOrWhiteSpace(list))
+            return "";
+        var first = list.Split(',', ';').FirstOrDefault(p => !string.IsNullOrWhiteSpace(p));
+        return first?.Trim() ?? "";
+    }
+
     /// <summary>
     /// Splits a recipient/address-list string into its real individual entries via MimeKit's own
     /// parser — never a naive comma-split. A quoted display name can legitimately contain its own

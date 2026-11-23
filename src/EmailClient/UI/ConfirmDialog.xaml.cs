@@ -72,13 +72,18 @@ public partial class ConfirmDialog : Window
     /// </summary>
     public static string? Show(Window owner, string title, string message, bool warningIcon, params ConfirmChoice[] choices)
     {
-        if (choices.Length is < 2 or > 3)
-            throw new ArgumentException("ConfirmDialog needs 2 or 3 choices.", nameof(choices));
+        if (choices.Length is < 1 or > 3)
+            throw new ArgumentException("ConfirmDialog needs 1 to 3 choices.", nameof(choices));
 
         var dialog = new ConfirmDialog(title, message, warningIcon, choices) { Owner = owner };
         dialog.ShowDialog();
         return dialog._result;
     }
+
+    /// <summary>Single-button "OK" alert — the app-themed equivalent of <c>MessageBox.Show(owner, message, title)</c>
+    /// for informational/validation messages that don't need a real choice.</summary>
+    public static void Alert(Window owner, string title, string message, bool warningIcon = false) =>
+        Show(owner, title, message, warningIcon, new ConfirmChoice("OK"));
 
     private void Choice_Click(object sender, RoutedEventArgs e)
     {

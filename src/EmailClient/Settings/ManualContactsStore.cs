@@ -17,8 +17,7 @@ public sealed class ManualContact
 /// </summary>
 public static class ManualContactsStore
 {
-    private static string DataDir =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IITBWebmailWrapper");
+    private static string DataDir => AppDataPaths.Root;
 
     private static string ContactsPath => Path.Combine(DataDir, "contacts.json");
 

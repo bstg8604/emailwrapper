@@ -16,9 +16,7 @@ namespace EmailClient.UI;
 public sealed record ComposeAttachment(string Path, string Name, string Size)
 {
     /// <summary>Computed, not persisted — same classifier the reading pane's own attachment chips
-    /// use, so a PDF gets the same tinted mark whether it's about to be sent or was just received.
-    /// Excluded from JSON so ScheduledSendStore's on-disk queue doesn't carry derived values that
-    /// are cheap to recompute and would just be dead weight in the file.</summary>
+    /// use, so a PDF gets the same tinted mark whether it's about to be sent or was just received.</summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public string IconColorHex => AttachmentIconClassifier.For(Name).ColorHex;
 
@@ -88,6 +86,18 @@ public partial class ComposeWindow : Window
     private bool _editorReady;
     private bool _discarding;
 
+    // What the window opened with — a reply/forward pre-fills To/Subject/Body with the original
+    // message's quote and a "Fwd:"/"Re:" subject, none of which the user actually typed. Comparing
+    // the close-time state against these (see HasUnsavedChanges) instead of ComposeResult.HasContent
+    // is what lets opening a forward and immediately closing it skip the "save changes?" prompt —
+    // there's nothing to save that wasn't already sitting in the original message.
+    private readonly string _initialTo;
+    private readonly string _initialCc;
+    private readonly string _initialBcc;
+    private readonly string _initialSubject;
+    private readonly string _initialBodyText;
+    private readonly List<string> _initialAttachmentNames;
+
     /// <summary>
     /// Recipient autocomplete, wired in by MainWindow from the connected account's mail-history
     /// index. Null on sample data or before that index has anything to offer — the To/Cc/Bcc
@@ -149,6 +159,13 @@ public partial class ComposeWindow : Window
         _bodyHtml = _initialHtml;
         _bodyText = body;
         PlainEditor.Text = body;
+
+        _initialTo = to;
+        _initialCc = cc;
+        _initialBcc = bcc;
+        _initialSubject = subject;
+        _initialBodyText = body;
+        _initialAttachmentNames = [.. _attachments.Select(a => a.Name)];
 
         if (!string.IsNullOrWhiteSpace(cc))
             ShowCc();
@@ -250,6 +267,25 @@ public partial class ComposeWindow : Window
                     text: editor.innerText
                 }));
             }
+
+            // Shared by the paste handler and the type-then-space/Enter linkifier below. A bare
+            // word is only treated as a domain when it has a real letter-only suffix of 2+
+            // characters after the last dot (rules out "3.5", "e.g.", "Mr." etc.) and at least one
+            // character before it — deliberately conservative over catching every possible domain,
+            // since a false positive (linkifying something that wasn't meant as a link) is far more
+            // annoying than an occasional missed one.
+            const bareDomainPattern = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*\.[a-z]{2,}(\/[^\s<]*)?$/i;
+            function isLinkableWord(word) {
+                if (/^(https?:\/\/|www\.)/i.test(word))
+                    return true;
+                // Excludes a lone "word.tld" that's actually a version number or ellipsis-ish
+                // token by requiring at least one letter in the part right before the final dot
+                // group — "3.5" and "127.0.0.1" stay plain text; "imxd.in" and "example.co.uk" don't.
+                return bareDomainPattern.test(word) && /[a-z]/i.test(word.split(".")[0]);
+            }
+            function wordHref(word) {
+                return /^https?:\/\//i.test(word) ? word : "https://" + word;
+            }
             editor.addEventListener("input", function() {
                 clearTimeout(pending);
                 pending = setTimeout(post, 150);
@@ -303,27 +339,110 @@ public partial class ComposeWindow : Window
                 // including a real Excel/Sheets table staying a real table structurally — only the
                 // decorative mso- styling on its cells is what gets dropped, not the rows/columns.
                 const html = (e.clipboardData || window.clipboardData).getData("text/html");
-                if (!html || !/mso-|urn:schemas-microsoft-com:office|<!--\[if\s/i.test(html))
+                if (html && /mso-|urn:schemas-microsoft-com:office|<!--\[if\s/i.test(html)) {
+                    e.preventDefault();
+                    const container = document.createElement("div");
+                    container.innerHTML = html;
+
+                    const walker = document.createTreeWalker(container, NodeFilter.SHOW_COMMENT, null);
+                    const comments = [];
+                    while (walker.nextNode()) comments.push(walker.currentNode);
+                    comments.forEach(function(c) { c.remove(); });
+
+                    container.querySelectorAll("*").forEach(function(el) {
+                        el.removeAttribute("style");
+                        el.removeAttribute("class");
+                        el.removeAttribute("lang");
+                        if (el.tagName === "O:P") el.remove();
+                    });
+
+                    document.execCommand("insertHTML", false, container.innerHTML);
+                    post();
                     return;
+                }
 
-                e.preventDefault();
-                const container = document.createElement("div");
-                container.innerHTML = html;
+                // A plain-text paste that's (or contains) a URL/bare domain becomes a real
+                // clickable link, same as Gmail/Outlook. Gated on "no real <a> already in the
+                // clipboard HTML" rather than "no HTML at all" — copying so much as a bare URL out
+                // of a browser's address bar, or any selected text off a page, typically carries a
+                // trivial text/html payload alongside the plain text even with no actual link in
+                // it, so requiring zero HTML meant this almost never fired in practice.
+                const alreadyLinked = html && /<a[\s>]/i.test(html);
+                if (!alreadyLinked) {
+                    const text = (e.clipboardData || window.clipboardData).getData("text/plain");
+                    if (text && /\S/.test(text)) {
+                        // Escape first, then rebuild word-by-word — splitting on runs of
+                        // whitespace so multi-line pastes and multiple links in one paste both
+                        // work, while whatever separated them (spaces, tabs, newlines) is preserved
+                        // exactly via the capturing group in the split.
+                        const escaped = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+                        const parts = escaped.split(/(\s+)/);
+                        let anyLinked = false;
+                        const linked = parts.map(function(part) {
+                            if (/^\s+$/.test(part) || !isLinkableWord(part))
+                                return part;
+                            anyLinked = true;
+                            return '<a href="' + wordHref(part) + '">' + part + '</a>';
+                        }).join("");
 
-                const walker = document.createTreeWalker(container, NodeFilter.SHOW_COMMENT, null);
-                const comments = [];
-                while (walker.nextNode()) comments.push(walker.currentNode);
-                comments.forEach(function(c) { c.remove(); });
+                        if (anyLinked) {
+                            e.preventDefault();
+                            document.execCommand("insertHTML", false, linked.replace(/\n/g, "<br>"));
+                            post();
+                        }
+                    }
+                }
+            });
 
-                container.querySelectorAll("*").forEach(function(el) {
-                    el.removeAttribute("style");
-                    el.removeAttribute("class");
-                    el.removeAttribute("lang");
-                    if (el.tagName === "O:P") el.remove();
-                });
+            // Gmail/Word-style "finish typing a URL, hit space/Enter, it becomes a link" — runs
+            // after the browser's own default handling has already inserted the space/newline
+            // character (the 0ms timeout defers to just after that), then looks at the word
+            // immediately before the caret.
+            editor.addEventListener("keydown", function(e) {
+                if (e.key !== " " && e.key !== "Enter" && e.key !== "Tab")
+                    return;
+                setTimeout(function() {
+                    const selection = window.getSelection();
+                    if (!selection.rangeCount)
+                        return;
+                    const range = selection.getRangeAt(0);
+                    if (!range.collapsed || range.startContainer.nodeType !== Node.TEXT_NODE)
+                        return;
+                    const node = range.startContainer;
+                    if (node.parentElement && node.parentElement.closest("a"))
+                        return; // Already inside a link — nothing to do.
 
-                document.execCommand("insertHTML", false, container.innerHTML);
-                post();
+                    const text = node.textContent;
+                    let end = range.startOffset;
+                    // The just-inserted space/newline sits right before the caret for a plain
+                    // space/Tab; Enter instead splits into a new text node, so the caret in *this*
+                    // node is already positioned right after the word with nothing trailing.
+                    if (end > 0 && /\s/.test(text[end - 1]))
+                        end--;
+                    let start = end;
+                    while (start > 0 && !/\s/.test(text[start - 1]))
+                        start--;
+                    const word = text.slice(start, end);
+                    if (!word || !isLinkableWord(word))
+                        return;
+
+                    const anchor = document.createElement("a");
+                    anchor.href = wordHref(word);
+                    anchor.textContent = word;
+
+                    const wordRange = document.createRange();
+                    wordRange.setStart(node, start);
+                    wordRange.setEnd(node, end);
+                    wordRange.deleteContents();
+                    wordRange.insertNode(anchor);
+
+                    const after = document.createRange();
+                    after.setStartAfter(anchor);
+                    after.collapse(true);
+                    selection.removeAllRanges();
+                    selection.addRange(after);
+                    post();
+                }, 0);
             });
 
             window.setContent = function(html) { editor.innerHTML = html; post(); };
@@ -1713,9 +1832,8 @@ public partial class ComposeWindow : Window
             var info = new FileInfo(dialog.FileName);
             if (info.Length > MaxInlineImageBytes)
             {
-                System.Windows.MessageBox.Show(this,
-                    "That image is larger than 5 MB. Attach it as a file instead of embedding it inline.",
-                    "Image too large", MessageBoxButton.OK, MessageBoxImage.Warning);
+                EmailClient.UI.ConfirmDialog.Alert(this, "Image too large",
+                    "That image is larger than 5 MB. Attach it as a file instead of embedding it inline.");
                 return;
             }
 
@@ -1733,17 +1851,19 @@ public partial class ComposeWindow : Window
         }
         catch (Exception ex)
         {
-            System.Windows.MessageBox.Show(this, $"Couldn't insert the image: {ex.Message}", "Insert failed",
-                MessageBoxButton.OK, MessageBoxImage.Warning);
+            EmailClient.UI.ConfirmDialog.Alert(this, "Insert failed", $"Couldn't insert the image: {ex.Message}");
         }
     }
 
     private void Link_Click(object sender, RoutedEventArgs e)
     {
         LinkBar.SlideDownReveal(140, fromOffset: -6);
-        LinkBox.Text = "https://";
+        // Left empty rather than pre-filled with "https://" — that text used to sit right where a
+        // pasted URL landed too, so pasting without first selecting-all produced
+        // "https://https://example.com" instead of just the pasted address. A scheme-less entry
+        // (typed or pasted) gets "https://" prepended automatically below instead.
+        LinkBox.Text = "";
         LinkBox.Focus();
-        LinkBox.CaretIndex = LinkBox.Text.Length;
     }
 
     private async void InsertLink_Click(object sender, RoutedEventArgs e)
@@ -1751,14 +1871,18 @@ public partial class ComposeWindow : Window
         var url = LinkBox.Text.Trim();
         LinkBar.SlideUpHide(110, toOffset: -6);
 
+        // A bare "example.com" or "www.example.com" (no scheme at all) is the common case now that
+        // the box no longer pre-fills "https://" — treated as https rather than rejected outright.
+        if (url.Length > 0 && !System.Text.RegularExpressions.Regex.IsMatch(url, @"^[a-z][a-z0-9+.-]*:", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+            url = "https://" + url;
+
         // Only ever produce links the viewer can safely follow — a javascript: or data: href
         // typed in here would otherwise be handed straight to the recipient.
         if (!Uri.TryCreate(url, UriKind.Absolute, out var parsed)
             || (parsed.Scheme != Uri.UriSchemeHttp && parsed.Scheme != Uri.UriSchemeHttps
                 && parsed.Scheme != Uri.UriSchemeMailto))
         {
-            System.Windows.MessageBox.Show(this, "Enter a http, https or mailto address.", "That link isn't valid",
-                MessageBoxButton.OK, MessageBoxImage.Warning);
+            EmailClient.UI.ConfirmDialog.Alert(this, "That link isn't valid", "Enter a http, https or mailto address.");
             return;
         }
 
@@ -2306,6 +2430,23 @@ public partial class ComposeWindow : Window
         [.. _attachments],
         _inReplyTo, _references);
 
+    /// <summary>True once anything differs from what the window opened with — see the "_initial*"
+    /// fields' own remarks for why this is the right question to ask instead of ComposeResult's
+    /// plain HasContent, which a forward/reply's own pre-filled quote and subject would always
+    /// satisfy even with zero user edits.</summary>
+    private bool HasUnsavedChanges()
+    {
+        static string Normalize(string s) => s.Replace("\r\n", "\n").Trim();
+
+        var current = BuildResult();
+        return !string.Equals(current.To.Trim(), _initialTo.Trim(), StringComparison.Ordinal)
+            || !string.Equals(current.Cc.Trim(), _initialCc.Trim(), StringComparison.Ordinal)
+            || !string.Equals(current.Bcc.Trim(), _initialBcc.Trim(), StringComparison.Ordinal)
+            || !string.Equals(current.Subject.Trim(), _initialSubject.Trim(), StringComparison.Ordinal)
+            || !string.Equals(Normalize(current.Body), Normalize(_initialBodyText), StringComparison.Ordinal)
+            || !current.Files.Select(a => a.Name).SequenceEqual(_initialAttachmentNames);
+    }
+
     // Catches the everyday "I said I attached something and then didn't" mistake — every major
     // client nags about this one way or another. Fires once per send attempt; if the user chooses
     // to send anyway, it doesn't ask again for the rest of this compose session.
@@ -2325,18 +2466,16 @@ public partial class ComposeWindow : Window
         Close();
     }
 
-    /// <summary>Shared by SendButton and every ScheduleSendButton option — required-field checks
-    /// and the "forgot the attachment" nudge apply the same way whether the message goes out now
-    /// or hours from now. Returns false (having already shown whatever dialog explains why) if the
-    /// message isn't ready to hand off.</summary>
+    /// <summary>Required-field checks and the "forgot the attachment" nudge, shared by every send
+    /// path. Returns false (having already shown whatever dialog explains why) if the message isn't
+    /// ready to hand off.</summary>
     private async Task<bool> ValidateAndFlushForSendAsync()
     {
         await FlushEditorAsync();
 
         if (string.IsNullOrWhiteSpace(ToBox.Text))
         {
-            System.Windows.MessageBox.Show(this, "Add at least one recipient.", "Missing recipient",
-                MessageBoxButton.OK, MessageBoxImage.Warning);
+            UI.ConfirmDialog.Alert(this, "Missing recipient", "Add at least one recipient.");
             return false;
         }
 
@@ -2345,8 +2484,7 @@ public partial class ComposeWindow : Window
         // as much as the recipient, so this isn't optional the way the attachment check is.
         if (string.IsNullOrWhiteSpace(SubjectBox.Text))
         {
-            System.Windows.MessageBox.Show(this, "Add a subject before sending.", "Missing subject",
-                MessageBoxButton.OK, MessageBoxImage.Warning);
+            UI.ConfirmDialog.Alert(this, "Missing subject", "Add a subject before sending.");
             SubjectBox.Focus();
             return false;
         }
@@ -2365,57 +2503,6 @@ public partial class ComposeWindow : Window
         return true;
     }
 
-    /// <summary>The message actually going out later rather than now — set alongside
-    /// <see cref="Result"/> when a ScheduleSendButton option is chosen; null means "send now" (the
-    /// plain Send button's own path). MainWindow.OnComposeClosed checks this to route to the
-    /// scheduled-send queue instead of the immediate undoable-send path.</summary>
-    public DateTime? ScheduledForUtc { get; private set; }
-
-    private static readonly (string Label, Func<DateTime, DateTime> Compute)[] ScheduleOptions =
-    [
-        ("In 1 hour", now => now.AddHours(1)),
-        ("This evening (6 PM)", now => AtTimeOnOrAfter(now, 18, 0)),
-        ("Tomorrow morning (9 AM)", now => AtTimeOnOrAfter(now.Date.AddDays(1), 9, 0)),
-        ("Monday morning (9 AM)", now => AtTimeOnOrAfter(NextMonday(now.Date), 9, 0)),
-    ];
-
-    /// <summary>Today at the given time if that's still in the future, otherwise tomorrow at that
-    /// time — "this evening" picked at 7 PM should mean tomorrow evening, not a time already past.</summary>
-    private static DateTime AtTimeOnOrAfter(DateTime day, int hour, int minute)
-    {
-        var candidate = day.Date.AddHours(hour).AddMinutes(minute);
-        return candidate > day ? candidate : candidate.AddDays(1);
-    }
-
-    private static DateTime NextMonday(DateTime fromDate)
-    {
-        var daysUntilMonday = ((int)DayOfWeek.Monday - (int)fromDate.DayOfWeek + 7) % 7;
-        return fromDate.AddDays(daysUntilMonday == 0 ? 7 : daysUntilMonday);
-    }
-
-    private void ScheduleSendButton_Click(object sender, RoutedEventArgs e)
-    {
-        var menu = new System.Windows.Controls.ContextMenu { PlacementTarget = ScheduleSendButton };
-        foreach (var (label, compute) in ScheduleOptions)
-        {
-            var item = new System.Windows.Controls.MenuItem { Header = label };
-            item.Click += async (_, _) => await ScheduleSendAsync(compute(DateTime.Now));
-            menu.Items.Add(item);
-        }
-        menu.IsOpen = true;
-    }
-
-    private async Task ScheduleSendAsync(DateTime sendAtLocal)
-    {
-        if (!await ValidateAndFlushForSendAsync())
-            return;
-
-        // Result being non-null is what OnClosing's own guard already treats as "handled, don't ask
-        // about unsaved changes" — matching the plain Send path, which relies on the same check.
-        Result = BuildResult();
-        ScheduledForUtc = sendAtLocal.ToUniversalTime();
-        Close();
-    }
 
     /// <summary>
     /// Saves right now and stays open — unlike the old behaviour, which set <see cref="Draft"/>
@@ -2475,7 +2562,7 @@ public partial class ComposeWindow : Window
         // through this one override, which is what lets a single check here cover all of them.
         // Result is null means "not sending"; _discarding means Discard or this same prompt's own
         // Save/Discard choice already decided the outcome — either way there's nothing left to ask.
-        if (!_closeConfirmed && Result is null && !_discarding && BuildResult().HasContent)
+        if (!_closeConfirmed && Result is null && !_discarding && HasUnsavedChanges())
         {
             e.Cancel = true;
             // Deferred via BeginInvoke, not called directly: ConfirmCloseAsync's first line calls

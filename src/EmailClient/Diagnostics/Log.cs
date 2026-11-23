@@ -26,10 +26,7 @@ public static class Log
     private static readonly object Gate = new();
     private static bool _failed;
 
-    public static string Directory =>
-        Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "IITBWebmailWrapper");
+    public static string Directory => Settings.AppDataPaths.Root;
 
     public static string FilePath => Path.Combine(Directory, "purplemail.log");
 

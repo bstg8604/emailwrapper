@@ -582,11 +582,11 @@
                                             <Button Style="{StaticResource SigFormatButton}" Click="Quote_Click" ToolTip="Block quote"
                                                     AutomationProperties.Name="Block quote" FontFamily="Segoe UI" Content="&#x275D;" FontSize="15"/>
                                             <Border Width="1" Height="16" Background="{DynamicResource Border}" Margin="4,0" VerticalAlignment="Center"/>
-                                            <!-- A text label, not the &#xE7A7; glyph — it reads as an undo/refresh
-                                                 arrow rather than "clear formatting", easy to mistake for the
-                                                 opposite of what it does. -->
-                                            <Button Style="{StaticResource SigFormatButton}" Width="38" Click="ClearFormatting_Click" ToolTip="Clear formatting"
-                                                    AutomationProperties.Name="Clear formatting" Content="Clear" FontSize="9.5"/>
+                                            <!-- Same glyph ComposeWindow's own formatting toolbar uses for
+                                                 "Remove formatting" — kept identical across both editors. -->
+                                            <Button Style="{StaticResource SigFormatButton}" Click="ClearFormatting_Click" ToolTip="Clear formatting"
+                                                    AutomationProperties.Name="Clear formatting" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                                                    Content="&#xE7A7;" FontSize="13"/>
                                         </WrapPanel>
                                         <wv2:WebView2 x:Name="SignatureEditorView" Height="120"/>
                                         <StackPanel x:Name="SignatureLinkBar" Orientation="Horizontal" Margin="2,4,2,2" Visibility="Collapsed">
@@ -844,6 +844,27 @@
                             <TextBlock x:Name="StartWithWindowsHint"
                                        Text="Starts minimised to the tray, so new mail is announced from sign-in onwards."
                                        FontSize="11" Foreground="{DynamicResource TextMuted}" TextWrapping="Wrap" Margin="23,4,0,20"/>
+
+                            <TextBlock Text="Appearance &amp; layout" Style="{StaticResource SectionHeader}"/>
+                            <Button x:Name="ResetPanelSizesButton" Content="Reset panel sizes" Style="{StaticResource OutlineActionButton}"
+                                    Padding="12,7" HorizontalAlignment="Left"
+                                    AutomationProperties.Name="Reset panel sizes to default" Click="ResetPanelSizesButton_Click"/>
+                            <TextBlock Text="Puts the message list back to its default width after you've dragged it wider or narrower."
+                                       FontSize="11" Foreground="{DynamicResource TextMuted}" TextWrapping="Wrap" Margin="0,6,0,20"/>
+
+                            <TextBlock Text="Links &amp; media" Style="{StaticResource SectionHeader}"/>
+                            <StackPanel Orientation="Horizontal">
+                                <TextBox x:Name="BrowserPathBox" Width="260" FontSize="12" Padding="7,5" IsReadOnly="True"
+                                         Background="{DynamicResource SurfaceSunken}" BorderThickness="0"
+                                         AutomationProperties.Name="Chosen browser"
+                                         Text="System default browser"/>
+                                <Button Content="Choose…" Style="{StaticResource OutlineActionButton}" Padding="12,7" Margin="8,0,0,0"
+                                        AutomationProperties.Name="Choose browser" Click="ChooseBrowserButton_Click"/>
+                                <Button x:Name="ClearBrowserButton" Content="Use default" Style="{StaticResource OutlineActionButton}" Padding="12,7" Margin="8,0,0,0"
+                                        AutomationProperties.Name="Use system default browser" Click="ClearBrowserButton_Click" Visibility="Collapsed"/>
+                            </StackPanel>
+                            <TextBlock Text="Links in a message, and the reading pane's own link-hover preview, open in this browser instead of whatever Windows has set as default."
+                                       FontSize="11" Foreground="{DynamicResource TextMuted}" TextWrapping="Wrap" Margin="0,6,0,20"/>
 
                             <TextBlock Text="Diagnostics" Style="{StaticResource SectionHeader}"/>
                             <Button Content="Open log file" Style="{StaticResource OutlineActionButton}"

@@ -203,4 +203,28 @@ public static class Motion
             window.BeginAnimation(UIElement.OpacityProperty,
                 new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(ms)) { EasingFunction = EaseOut });
     }
+
+    /// <summary>Fade plus a very slight scale-up settle for a window coming back from the tray (or a
+    /// second launch surfacing the already-running one) — call right after Show()/Activate(). Unlike
+    /// <see cref="FadeInOnShow"/>, this animates immediately rather than waiting for ContentRendered:
+    /// the window's content is already laid out from before it was hidden, so there's no first-paint
+    /// flash to wait out, and waiting for ContentRendered here actually skips the animation entirely
+    /// (that event only fires once, the very first time the window renders).</summary>
+    public static void FadeInOnRestore(this Window window, double ms = 180)
+    {
+        window.Opacity = 0;
+        window.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(ms)) { EasingFunction = EaseOut });
+
+        // The scale-up settle applies to the window's Content, not the Window itself — WPF's Window
+        // rejects a RenderTransform outright (CoerceRenderTransform throws InvalidOperationException,
+        // "Transform is not valid for Window"), unlike every other UIElement.
+        if (window.Content is not UIElement content)
+            return;
+        var scale = new ScaleTransform(0.97, 0.97, 0.5, 0.5);
+        content.RenderTransform = scale;
+        if (content is FrameworkElement fe)
+            fe.RenderTransformOrigin = new System.Windows.Point(0.5, 0.5);
+        scale.BeginAnimation(ScaleTransform.ScaleXProperty, new DoubleAnimation(0.97, 1, TimeSpan.FromMilliseconds(ms)) { EasingFunction = EaseOut });
+        scale.BeginAnimation(ScaleTransform.ScaleYProperty, new DoubleAnimation(0.97, 1, TimeSpan.FromMilliseconds(ms)) { EasingFunction = EaseOut });
+    }
 }

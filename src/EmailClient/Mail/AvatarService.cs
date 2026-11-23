@@ -33,9 +33,7 @@ public static class AvatarService
     // Same app-data folder the rest of Purplemail's per-user state (settings, contacts, signatures)
     // already lives in — see build/Purplemail.iss's [UninstallDelete] comment for why it's never
     // touched by uninstall.
-    private static readonly string CacheDir = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "IITBWebmailWrapper", "avatars");
+    private static readonly string CacheDir = Path.Combine(Settings.AppDataPaths.Root, "avatars");
 
     // Domains rarely rotate their BIMI logo; a week keeps repeat lookups fast without going stale
     // for long if one ever does.

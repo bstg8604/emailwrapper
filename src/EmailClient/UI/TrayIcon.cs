@@ -124,6 +124,10 @@ public sealed class TrayIcon : IDisposable
         _window.Show();
         _window.WindowState = _restoreTo;
         _window.Activate();
+        // Otherwise the window just appears at full opacity — Hide()/Show() doesn't replay
+        // FadeInOnShow's own ContentRendered-triggered fade, since ContentRendered only ever fires
+        // once, the very first time the window renders.
+        _window.FadeInOnRestore();
     }
 
     /// <summary>Raised after a plain restore (icon click/double-click, or the context menu's

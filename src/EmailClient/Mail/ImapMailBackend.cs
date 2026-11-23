@@ -51,6 +51,13 @@ public sealed class ImapMailBackend : IAsyncDisposable
     private int _page = 1;
     private const int PageSize = 50;
 
+    /// <summary>The page NextPageAsync/PreviousPageAsync have already advanced to — the single
+    /// authoritative page cursor for whatever folder is open. MainWindow's own RefreshMessagesAsync
+    /// reads this (rather than keeping a second, separately-tracked page number) specifically so
+    /// paging forward/back and then reading from MailStore ask for the page that was actually just
+    /// navigated to, not a stale one.</summary>
+    public int CurrentPage => _page;
+
     // ---- IMAP IDLE (push new-mail notifications) -------------------------------------------
     private ImapClient? _idleClient;
     private CancellationTokenSource? _idleCts;
@@ -288,7 +295,17 @@ public sealed class ImapMailBackend : IAsyncDisposable
 
     // ---- Connection -----------------------------------------------------------------------
 
-    public async Task ConnectAsync()
+    /// <param name="skipContactsScan">True when the caller already has a persisted copy of
+    /// contacts from a previous session (MailStore's own `contacts` table) worth trusting for now —
+    /// the scan itself is a real, several-second IMAP cost (up to ~800 envelope fetches across
+    /// Inbox+Sent) paid on every single sign-in otherwise, which is most of why a fresh app launch
+    /// felt slow to reach "Connected" even after the local-database rewiring elsewhere made
+    /// everything *else* about sign-in fast. Skipping it here doesn't lose the data — MainWindow
+    /// already seeded MailStore from a previous successful scan — and MailSyncEngine's own periodic
+    /// call to <see cref="RescanContactsAsync"/> keeps it from ever going stale for long, so this
+    /// genuinely isn't paying for freshness with staleness, just moving the (still-recurring) cost
+    /// off the one moment — sign-in — where a user is actually staring at the screen waiting.</param>
+    public async Task ConnectAsync(bool skipContactsScan = false)
     {
         using var _ = await AcquireImapLockAsync();
         SetState(ConnectionState.Connecting);
@@ -314,7 +331,8 @@ public sealed class ImapMailBackend : IAsyncDisposable
         // confusing "the ImapClient is busy" failure on the very first refresh after signing in —
         // one that also left the message list showing whatever was there before (stale sample
         // data) since the exception aborted the refresh before it could clear it.
-        await _contacts.BuildAsync(_imap, _account.Email);
+        if (!skipContactsScan)
+            await _contacts.BuildAsync(_imap, _account.Email);
 
         // Push only counts once the IDLE loop actually reaches IDLE — it reports that itself. Until
         // then (or if it already gave up) the 60-second poll is what's finding mail.
@@ -322,11 +340,29 @@ public sealed class ImapMailBackend : IAsyncDisposable
         Log.Info("Connected.");
     }
 
+    /// <summary>Re-scans Inbox+Sent for contacts — the same scan ConnectAsync itself can skip via
+    /// <c>skipContactsScan</c>, callable safely from anywhere else (MailSyncEngine's own periodic
+    /// call, specifically). ContactsIndex.BuildAsync talks to the shared `_imap` client directly,
+    /// with no locking of its own — never a problem while its only caller was ConnectAsync (which
+    /// already holds the lock for its whole duration), but a real one for any other caller without
+    /// this wrapper: two unrelated commands racing on one IMAP connection is exactly the protocol
+    /// desync this app's shared lock exists to prevent everywhere else.</summary>
+    public async Task RescanContactsAsync(CancellationToken ct = default)
+    {
+        using var _ = await AcquireImapLockAsync(ct);
+        await EnsureConnectedAsync();
+        await _contacts.BuildAsync(_imap, _account.Email);
+    }
+
     private async Task IndexFoldersAsync()
     {
         _foldersByMailbox.Clear();
         foreach (var folder in await AllFoldersAsync())
             _foldersByMailbox[folder.FullName] = folder;
+        // The special-mailbox map (see GetSpecialMailboxesAsync) is only ever valid against this
+        // exact folder set — invalidated whenever the set changes (rename/delete/create), same as
+        // _foldersByMailbox itself.
+        _specialMailboxesCache = null;
     }
 
     private async Task<List<IMailFolder>> AllFoldersAsync()
@@ -370,9 +406,25 @@ public sealed class ImapMailBackend : IAsyncDisposable
         ("Archive", MailKit.SpecialFolder.Archive, ["Archive", "All Mail"]),
     ];
 
+    // Resolved once per connection (see IndexFoldersAsync's own invalidation) rather than re-derived
+    // on every single call — GetSpecialMailboxesAsync used to be called fresh (several _imap.GetFolder
+    // round trips, all under the shared lock) from every send, save-draft, archive, delete and move,
+    // even though the Inbox/Sent/Drafts/Trash mapping essentially never changes mid-session. That
+    // repeated, avoidable cost was itself a real contributor to the shared IMAP connection staying
+    // busy long enough for unrelated operations to time out waiting for it.
+    private IReadOnlyDictionary<string, string>? _specialMailboxesCache;
+
     public async Task<IReadOnlyDictionary<string, string>> GetSpecialMailboxesAsync()
     {
+        if (_specialMailboxesCache is { } cached)
+            return cached;
+
         using var _ = await AcquireImapLockAsync();
+        // Re-check under the lock: a concurrent first caller may have already populated this while
+        // this call was waiting its turn.
+        if (_specialMailboxesCache is { } cachedAfterWait)
+            return cachedAfterWait;
+
         var map = new Dictionary<string, string> { ["Inbox"] = _imap.Inbox.FullName };
 
         foreach (var (key, special, fallbackNames) in SpecialFolders)
@@ -389,6 +441,7 @@ public sealed class ImapMailBackend : IAsyncDisposable
                 map[key] = folder.FullName;
         }
 
+        _specialMailboxesCache = map;
         return map;
     }
 
@@ -411,10 +464,15 @@ public sealed class ImapMailBackend : IAsyncDisposable
             if (!folder.Attributes.HasFlag(FolderAttributes.NoSelect))
             {
                 var unread = 0;
+                var total = 0;
                 try
                 {
-                    await folder.StatusAsync(StatusItems.Unread);
+                    // Count alongside Unread — this is what lets the message-list pager show (and
+                    // page through) a folder's real size instead of capping at whatever
+                    // MailSyncEngine has synced so far.
+                    await folder.StatusAsync(StatusItems.Unread | StatusItems.Count);
                     unread = folder.Unread;
+                    total = folder.Count;
                 }
                 catch (Exception)
                 {
@@ -425,7 +483,7 @@ public sealed class ImapMailBackend : IAsyncDisposable
                     ? 0
                     : folder.FullName.Split(folder.DirectorySeparator).Length - 1;
 
-                result.Add(new Automation.MailFolder(folder.FullName, folder.Name, unread, Math.Max(0, depth)));
+                result.Add(new Automation.MailFolder(folder.FullName, folder.Name, unread, Math.Max(0, depth), total));
             }
         }
         return result;
@@ -499,6 +557,18 @@ public sealed class ImapMailBackend : IAsyncDisposable
     /// its own without the user having to manually sign in again. Reopens whatever folder was
     /// current before falling back to Inbox (what a fresh <see cref="ConnectAsync"/> opens).
     /// </summary>
+    // A live report of the app "slowly becoming very high latency" traced back to exactly this
+    // method during a flaky connection: every operation queued behind the shared lock (several
+    // folders' worth of MailSyncEngine syncs, plus a manual refresh) independently found the
+    // connection down and independently paid the *full* connect timeout trying to reconnect,
+    // one after another — four separate ~20-second-plus attempts stacking into well over a
+    // minute of cumulative blocking, all serialized behind the one lock everything else needed
+    // too. _lastConnectFailureUtc/ReconnectCooldown fixes that: once one attempt fails, every
+    // other caller queued up right behind it fails fast instead of repeating the same doomed
+    // attempt.
+    private DateTime? _lastConnectFailureUtc;
+    private static readonly TimeSpan ReconnectCooldown = TimeSpan.FromSeconds(10);
+
     private async Task EnsureConnectedAsync()
     {
         if (_imap.IsConnected && _imap.IsAuthenticated)
@@ -524,6 +594,16 @@ public sealed class ImapMailBackend : IAsyncDisposable
 
         // Getting here means the live connection is gone or unusable.
         SetState(ConnectionState.Offline);
+
+        if (_lastConnectFailureUtc is { } lastFailure && DateTime.UtcNow - lastFailure < ReconnectCooldown)
+        {
+            // See this method's own remarks above — the network almost certainly hasn't recovered
+            // in the last few seconds, so this fails fast rather than repeating the same doomed
+            // attempt every other operation queued behind the same lock would otherwise also pay
+            // the full timeout for, one at a time.
+            throw new IOException("The mail server was unreachable moments ago — not retrying yet.");
+        }
+
         Log.Info("IMAP connection lost or mailbox deselected — reconnecting.");
 
         var wantedMailbox = _currentMailbox;
@@ -538,7 +618,16 @@ public sealed class ImapMailBackend : IAsyncDisposable
             Log.Debug("Disconnect before reconnect failed: " + ex.Message);
         }
 
-        await ConnectAsync();
+        try
+        {
+            await ConnectAsync();
+            _lastConnectFailureUtc = null;
+        }
+        catch (Exception)
+        {
+            _lastConnectFailureUtc = DateTime.UtcNow;
+            throw;
+        }
 
         if (!string.Equals(wantedMailbox, _current?.FullName, StringComparison.OrdinalIgnoreCase)
             && _foldersByMailbox.TryGetValue(wantedMailbox, out var folder))
@@ -557,58 +646,161 @@ public sealed class ImapMailBackend : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Runs one IMAP operation, retrying it exactly once if the connection turns out to have died
+    /// in the gap between EnsureConnectedAsync's own check and the operation actually reaching the
+    /// server — a real, observed race (a live report showed "Couldn't open Inbox: The ImapClient is
+    /// not connected" moments after a successful EnsureConnectedAsync, correlated with the server/
+    /// proxy independently dropping the IDLE connection around the same time — this client's own
+    /// main connection can just as easily die in that same window), not defensive paranoia.
+    /// EnsureConnectedAsync's own pre-flight check narrows how often this actually has anything to
+    /// retry; this only covers the specific remaining case where that check just barely lost the
+    /// race. Callers still call EnsureConnectedAsync themselves at the top of the wrapped operation,
+    /// same as before — calling it twice on a retry is harmless (it's a no-op once already connected).
+    /// </summary>
+    private static async Task<T> WithReconnectRetryAsync<T>(Func<Task<T>> operation)
+    {
+        try
+        {
+            return await operation();
+        }
+        catch (Exception ex) when (ex is MailKit.ServiceNotConnectedException or IOException)
+        {
+            Log.Debug($"IMAP operation hit a dead connection ({ex.GetType().Name}) — retrying once after reconnecting.");
+            return await operation();
+        }
+    }
+
+    /// <summary>
+    /// Fetches the most recent <paramref name="maxCount"/> messages' envelopes+flags for
+    /// <paramref name="mailbox"/> — for <see cref="MailSyncEngine"/>'s own background sync, which
+    /// runs on its own schedule independent of whatever folder the user is actively looking at.
+    ///
+    /// Deliberately does NOT use SelectFolderAsync+ListMessagesAsync: those mutate <see cref="_current"/>,
+    /// which the UI's own GoToFolderAsync also mutates — a background caller doing the same would
+    /// race it exactly the way GoToFolderAsync itself used to race against overlapping folder
+    /// switches (the folder-switch bug fixed earlier this session). Instead this follows the same
+    /// safe pattern already established for a genuinely cross-folder read (OpenMessageAsync's own
+    /// mailbox parameter, FindConversationSiblingsAsync): temporarily select the target under the
+    /// SAME lock acquisition that does the fetch, then restore whatever was selected before,
+    /// without ever exposing the in-between state to another caller.
+    /// </summary>
+    public async Task<(IReadOnlyList<InboxRow> Rows, IReadOnlyDictionary<string, string?> MessageIds,
+            IReadOnlyDictionary<string, IReadOnlyList<string>?> References)>
+        FetchRecentEnvelopesAsync(string mailbox, int maxCount, CancellationToken ct = default)
+    {
+        using var _ = await AcquireImapLockAsync(ct);
+        return await WithReconnectRetryAsync(async () =>
+        {
+            await EnsureConnectedAsync();
+            var empty = (IReadOnlyList<InboxRow>)[];
+            var emptyIds = (IReadOnlyDictionary<string, string?>)new Dictionary<string, string?>();
+            var emptyRefs = (IReadOnlyDictionary<string, IReadOnlyList<string>?>)new Dictionary<string, IReadOnlyList<string>?>();
+            if (!_foldersByMailbox.TryGetValue(mailbox, out var folder))
+                return (empty, emptyIds, emptyRefs);
+
+            var originalFolder = _current;
+            var isOriginal = originalFolder is not null
+                && string.Equals(folder.FullName, originalFolder.FullName, StringComparison.Ordinal);
+            try
+            {
+                if (!isOriginal)
+                    await folder.OpenAsync(FolderAccess.ReadOnly);
+                else
+                    await folder.StatusAsync(StatusItems.Count); // same fresh-count reasoning as ListMessagesAsync's own StatusAsync call
+
+                var total = folder.Count;
+                if (total == 0)
+                    return (empty, emptyIds, emptyRefs);
+
+                var start = Math.Max(0, total - maxCount);
+                // References, on top of what ListMessagesAsync itself fetches: this is what lets
+                // FindConversationSiblings find *replies* to a message, not just its ancestors — a
+                // reply's own References header is what points back at the message it replied to.
+                var summaries = await folder.FetchAsync(start, total - 1,
+                    MessageSummaryItems.Envelope | MessageSummaryItems.Flags | MessageSummaryItems.UniqueId |
+                    MessageSummaryItems.InternalDate | MessageSummaryItems.BodyStructure | MessageSummaryItems.References);
+
+                // Mailbox stays null on every row — the sync engine already knows which mailbox this
+                // batch belongs to (it's the caller's own `mailbox` argument) and upserts under that,
+                // same "null means whatever folder this naturally belongs to" convention as everywhere
+                // else InboxRow.Mailbox is used.
+                var rows = summaries.Select(s => ToRow(s, isSentRow: IsSentFolder(folder))).ToList();
+                var messageIds = summaries.ToDictionary(
+                    s => s.UniqueId.Id.ToString(), s => s.Envelope?.MessageId);
+                var references = summaries.ToDictionary(
+                    s => s.UniqueId.Id.ToString(),
+                    s => s.References is { Count: > 0 } refs ? (IReadOnlyList<string>?)[.. refs] : null);
+                return (rows, messageIds, references);
+            }
+            finally
+            {
+                if (!isOriginal && originalFolder is not null)
+                {
+                    try { await originalFolder.OpenAsync(FolderAccess.ReadWrite); }
+                    catch (Exception) { /* EnsureConnectedAsync's own reconnect path recovers next call */ }
+                    _current = originalFolder;
+                }
+            }
+        });
+    }
+
     public async Task<MessagePage> ListMessagesAsync()
     {
         using var _ = await AcquireImapLockAsync();
-        await EnsureConnectedAsync();
-        if (_current is null)
-            return MessagePage.Empty;
-
-        // _current's own Count is whatever this connection last heard from the server — but new
-        // mail is detected on a completely separate connection (_idleClient, opened solely to sit
-        // in IDLE; see this class's own remarks on why). That connection noticing new mail and
-        // firing MailboxActivity doesn't, by itself, tell *this* connection anything — its own
-        // cached Count stays stale until something makes it ask again. A live report matched this
-        // exactly: the sidebar badge (ListFoldersAsync, which already does its own fresh
-        // StatusAsync per folder) updated the moment new mail arrived, but the message list itself
-        // didn't show it until switching folders — which works only because selecting a folder
-        // forces a real re-sync. StatusAsync here is that same fresh check, just without needing to
-        // leave and come back to trigger it.
-        try
+        return await WithReconnectRetryAsync(async () =>
         {
-            await _current.StatusAsync(StatusItems.Count);
-        }
-        catch (Exception)
-        {
-            // Best-effort — if the server doesn't like a STATUS on the currently selected folder
-            // (some don't), _current.Count below just falls back to whatever this connection last
-            // knew, same as before this existed.
-        }
+            await EnsureConnectedAsync();
+            if (_current is null)
+                return MessagePage.Empty;
 
-        var total = _current.Count;
-        var pageCount = Math.Max(1, (int)Math.Ceiling(total / (double)PageSize));
-        _page = Math.Clamp(_page, 1, pageCount);
+            // _current's own Count is whatever this connection last heard from the server — but new
+            // mail is detected on a completely separate connection (_idleClient, opened solely to sit
+            // in IDLE; see this class's own remarks on why). That connection noticing new mail and
+            // firing MailboxActivity doesn't, by itself, tell *this* connection anything — its own
+            // cached Count stays stale until something makes it ask again. A live report matched this
+            // exactly: the sidebar badge (ListFoldersAsync, which already does its own fresh
+            // StatusAsync per folder) updated the moment new mail arrived, but the message list itself
+            // didn't show it until switching folders — which works only because selecting a folder
+            // forces a real re-sync. StatusAsync here is that same fresh check, just without needing to
+            // leave and come back to trigger it.
+            try
+            {
+                await _current.StatusAsync(StatusItems.Count);
+            }
+            catch (Exception)
+            {
+                // Best-effort — if the server doesn't like a STATUS on the currently selected folder
+                // (some don't), _current.Count below just falls back to whatever this connection last
+                // knew, same as before this existed.
+            }
 
-        if (total == 0)
-            return new MessagePage([], _page, pageCount, 0, _currentMailbox);
+            var total = _current.Count;
+            var pageCount = Math.Max(1, (int)Math.Ceiling(total / (double)PageSize));
+            _page = Math.Clamp(_page, 1, pageCount);
 
-        // Page 1 = the newest PageSize messages. IMAP indices run oldest (0) to newest
-        // (Count - 1), so the newest page is the highest-numbered slice.
-        var endExclusive = total - (_page - 1) * PageSize;
-        var start = Math.Max(0, endExclusive - PageSize);
-        if (start >= endExclusive)
-            return new MessagePage([], _page, pageCount, total, _currentMailbox);
+            if (total == 0)
+                return new MessagePage([], _page, pageCount, 0, _currentMailbox);
 
-        var summaries = await _current.FetchAsync(start, endExclusive - 1,
-            MessageSummaryItems.Envelope | MessageSummaryItems.Flags | MessageSummaryItems.UniqueId |
-            MessageSummaryItems.InternalDate | MessageSummaryItems.BodyStructure);
+            // Page 1 = the newest PageSize messages. IMAP indices run oldest (0) to newest
+            // (Count - 1), so the newest page is the highest-numbered slice.
+            var endExclusive = total - (_page - 1) * PageSize;
+            var start = Math.Max(0, endExclusive - PageSize);
+            if (start >= endExclusive)
+                return new MessagePage([], _page, pageCount, total, _currentMailbox);
 
-        var rows = summaries
-            .OrderByDescending(s => s.InternalDate ?? DateTimeOffset.MinValue)
-            .Select(s => ToRow(s))
-            .ToList();
+            var summaries = await _current.FetchAsync(start, endExclusive - 1,
+                MessageSummaryItems.Envelope | MessageSummaryItems.Flags | MessageSummaryItems.UniqueId |
+                MessageSummaryItems.InternalDate | MessageSummaryItems.BodyStructure);
 
-        return new MessagePage(rows, _page, pageCount, total, _currentMailbox);
+            var isSent = IsSentFolder(_current);
+            var rows = summaries
+                .OrderByDescending(s => s.InternalDate ?? DateTimeOffset.MinValue)
+                .Select(s => ToRow(s, isSentRow: isSent))
+                .ToList();
+
+            return new MessagePage(rows, _page, pageCount, total, _currentMailbox);
+        });
     }
 
     /// <summary>
@@ -639,7 +831,7 @@ public sealed class ImapMailBackend : IAsyncDisposable
     /// </summary>
     public async Task<IReadOnlyList<InboxRow>> FindConversationSiblingsAsync(
         string excludeId, string? openedMessageId = null,
-        IReadOnlyList<string>? openedReferences = null, int max = 8, CancellationToken ct = default)
+        IReadOnlyList<string>? openedReferences = null, int max = 200, CancellationToken ct = default)
     {
         using var _ = await AcquireImapLockAsync(ct);
         await EnsureConnectedAsync();
@@ -721,7 +913,7 @@ public sealed class ImapMailBackend : IAsyncDisposable
                 // change for the common case. Only a genuinely cross-folder result carries an
                 // explicit mailbox, which is what tells a later attachment click or body fetch to
                 // select that folder first instead of assuming the active one.
-                results.AddRange(summaries.Select(s => ToRow(s, isOriginal ? null : folder.FullName)));
+                results.AddRange(summaries.Select(s => ToRow(s, isOriginal ? null : folder.FullName, isSentRow: IsSentFolder(folder))));
             }
             catch (Exception)
             {
@@ -833,10 +1025,11 @@ public sealed class ImapMailBackend : IAsyncDisposable
             MessageSummaryItems.Envelope | MessageSummaryItems.Flags | MessageSummaryItems.UniqueId |
             MessageSummaryItems.InternalDate | MessageSummaryItems.BodyStructure | MessageSummaryItems.Size);
 
+        var isSentSearch = IsSentFolder(_current);
         return summaries
             .Where(s => EnvelopeOperatorsMatch(s.Envelope, parsed) && FlagOperatorsMatch(s, parsed))
             .OrderByDescending(s => s.InternalDate ?? DateTimeOffset.MinValue)
-            .Select(s => ToRow(s))
+            .Select(s => ToRow(s, isSentRow: isSentSearch))
             .ToList();
     }
 
@@ -899,15 +1092,38 @@ public sealed class ImapMailBackend : IAsyncDisposable
     /// open. Set only by a caller (FindConversationSiblingsAsync) that fetched this summary from a
     /// *different* folder, so later operations on this specific row know to select that folder
     /// first — see InboxRow.Mailbox's own remarks.</param>
-    private static InboxRow ToRow(IMessageSummary summary, string? mailbox = null)
+    private static readonly string[] SentFolderNames = ["Sent", "Sent Items", "Sent Messages"];
+
+    /// <summary>RFC 6154 SPECIAL-USE, when the server advertises it, is authoritative; the name
+    /// fallback matches SpecialFolders' own list above for a server that doesn't. Synchronous and
+    /// free — Attributes/Name are already known from the folder listing, no extra round trip.</summary>
+    private static bool IsSentFolder(IMailFolder folder) =>
+        folder.Attributes.HasFlag(FolderAttributes.Sent)
+        || SentFolderNames.Any(name => string.Equals(folder.Name, name, StringComparison.OrdinalIgnoreCase));
+
+    /// <param name="isSentRow">True for a row from the Sent folder — every row there was written
+    /// by the signed-in account itself, so Envelope.From is always just "you" and tells the list
+    /// nothing useful; the recipient (Envelope.To) is what actually distinguishes one Sent row from
+    /// another. A live report on a real account confirmed this wasn't handled at all: every single
+    /// row in Sent showed the user's own name, indistinguishable from every other row.</param>
+    private static InboxRow ToRow(IMessageSummary summary, string? mailbox = null, bool isSentRow = false)
     {
         var when = (summary.InternalDate ?? DateTimeOffset.Now).LocalDateTime;
-        var from = summary.Envelope?.From?.Mailboxes?.FirstOrDefault();
-        var sender = from is null ? "(unknown sender)" : from.Name is { Length: > 0 } ? from.Name : from.Address;
+        var party = isSentRow
+            ? summary.Envelope?.To?.Mailboxes?.FirstOrDefault()
+            : summary.Envelope?.From?.Mailboxes?.FirstOrDefault();
+        var recipientCount = isSentRow ? summary.Envelope?.To?.Mailboxes?.Count() ?? 0 : 0;
+        var label = party is null
+            ? (isSentRow ? "(no recipient)" : "(unknown sender)")
+            : party.Name is { Length: > 0 } ? party.Name : party.Address;
+        // "and N more" for a Sent row addressed to several people — the same "who else was on
+        // this" signal a real client's list gives, not just the first name with the rest silently
+        // dropped.
+        var display = recipientCount > 1 ? $"{label} +{recipientCount - 1}" : label;
 
         return new InboxRow(
             summary.UniqueId.Id.ToString(),
-            sender,
+            display,
             summary.Envelope?.Subject is { Length: > 0 } subject ? subject : "(no subject)",
             "", // a snippet needs the body; skipped for list-fetch performance, same as before
             MailText.FormatListDate(when),
@@ -915,7 +1131,7 @@ public sealed class ImapMailBackend : IAsyncDisposable
             Starred: summary.Flags?.HasFlag(MessageFlags.Flagged) ?? false,
             HasAttachment: HasAttachments(summary.Body),
             Timestamp: when,
-            SenderAddress: from?.Address ?? "",
+            SenderAddress: party?.Address ?? "",
             Mailbox: mailbox);
     }
 
@@ -1433,7 +1649,13 @@ public sealed class ImapMailBackend : IAsyncDisposable
     {
         var warnings = new List<string>();
         var message = new MimeMessage();
-        message.From.Add(MailboxAddress.Parse(_account.Identity));
+        // Built directly rather than via MailboxAddress.Parse(_account.Identity) — Parse re-parses a
+        // plain "Display Name <email>" string, which throws if DisplayName itself contains a
+        // character RFC 5322 treats specially (a comma, an angle bracket, an "@") without being
+        // quoted first. The constructor form encodes the display name properly regardless of what's
+        // in it, so a From header that includes the sender's own name can never fail a send outright
+        // — this was the actual cause behind "Send" silently failing after the undo-send window.
+        message.From.Add(new MailboxAddress(_account.DisplayName, _account.Email));
         AddAddresses(message.To, result.To, warnings);
         AddAddresses(message.Cc, result.Cc, warnings);
         AddAddresses(message.Bcc, result.Bcc, warnings);
@@ -1520,37 +1742,49 @@ public sealed class ImapMailBackend : IAsyncDisposable
     /// (a vanished attachment, an unparseable address) — empty if everything went out intact.</summary>
     public async Task<IReadOnlyList<string>> SendAsync(ComposeResult result)
     {
-        // Only the tail (filing a Sent copy) touches _imap, but acquiring for the whole method is
-        // simpler and no real cost — nothing else needs the connection mid-send anyway.
-        using var _ = await AcquireImapLockAsync();
         var (message, warnings) = BuildMessage(result);
 
-        using var smtp = new SmtpClient { Timeout = NetworkTimeoutMs };
-        var options = _account.SmtpSecurity == SmtpSecurity.SslOnConnect
-            ? SecureSocketOptions.SslOnConnect
-            : SecureSocketOptions.StartTls;
-        await smtp.ConnectAsync(_account.SmtpHost, _account.SmtpPort, options);
-        await smtp.AuthenticateAsync(_account.LoginName, _account.Password);
-        await smtp.SendAsync(message);
-        await smtp.DisconnectAsync(true);
-
-        // Plain SMTP submission doesn't file a copy anywhere on its own — without this the
-        // message would go out but never appear in Sent.
-        var sent = await ResolveSpecialAsync("Sent");
-        if (sent is not null)
+        // Deliberately NOT under the IMAP lock — SmtpClient is its own separate connection, and
+        // holding _imapLock across the whole SMTP round trip used to make actual mail delivery wait
+        // behind whatever else was mid-command on the shared IMAP connection (a background sync
+        // sweep, an in-progress body backfill of hundreds of older messages) for no reason — SMTP
+        // doesn't touch that connection at all.
+        using (var smtp = new SmtpClient { Timeout = NetworkTimeoutMs })
         {
-            try
-            {
-                await sent.AppendAsync(message, MessageFlags.Seen);
-            }
-            catch (Exception)
-            {
-                // The send already succeeded; a failed Sent-folder copy isn't worth surfacing as
-                // a send failure.
-            }
+            var options = _account.SmtpSecurity == SmtpSecurity.SslOnConnect
+                ? SecureSocketOptions.SslOnConnect
+                : SecureSocketOptions.StartTls;
+            await smtp.ConnectAsync(_account.SmtpHost, _account.SmtpPort, options);
+            await smtp.AuthenticateAsync(_account.LoginName, _account.Password);
+            await smtp.SendAsync(message);
+            await smtp.DisconnectAsync(true);
         }
 
+        // Filing a Sent copy is best-effort and genuinely secondary to delivery having already
+        // succeeded above — fire-and-forget rather than awaited, so a busy shared IMAP connection
+        // (the same background backfill mentioned above can hold it for a long stretch indexing
+        // hundreds of older messages one at a time) can no longer make "Message sent" sit stuck for
+        // minutes waiting on something that already happened. A failure here means Sent doesn't get
+        // a copy this time around, not that the send itself failed — logged, not surfaced to the
+        // sender or queued for a resend that would just duplicate a message that already went out.
+        _ = FileSentCopyBestEffortAsync(message);
+
         return warnings;
+    }
+
+    private async Task FileSentCopyBestEffortAsync(MimeMessage message)
+    {
+        try
+        {
+            using var _ = await AcquireImapLockAsync();
+            var sent = await ResolveSpecialAsync("Sent");
+            if (sent is not null)
+                await sent.AppendAsync(message, MessageFlags.Seen);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("Filing a Sent copy of a message that already sent failed", ex);
+        }
     }
 
     public async Task<bool> SaveDraftAsync(ComposeResult result) => (await SaveDraftAsync(result, null)).Saved;
@@ -1623,7 +1857,7 @@ public sealed class ImapMailBackend : IAsyncDisposable
     /// <see cref="OpenMessageAsync"/>. Uses the cached message from that call when the uid still
     /// matches, otherwise re-fetches it.
     /// </summary>
-    public async Task<string?> DownloadAttachmentAsync(MailAttachment attachment, string targetPath)
+    public async Task<string?> DownloadAttachmentAsync(MailAttachment attachment, string targetPath, IProgress<int>? progress = null)
     {
         // Two URL shapes: "imap:{uid}:{index}" for the common case (whatever folder is currently
         // open), and "imapx:{mailbox}:{uid}:{index}" for an attachment on a cross-folder
@@ -1656,56 +1890,175 @@ public sealed class ImapMailBackend : IAsyncDisposable
         // previously-open one was still in flight. That silently saved the wrong message's attachment
         // bytes under the requested filename, with no error surfaced.
         using var _ = await AcquireImapLockAsync();
-        var message = mailbox is null && _cachedUid == uid ? _cachedMessage : null;
-        if (message is null)
+
+        // Already in memory (the message this session's own OpenMessageAsync last fetched, still
+        // the currently-open one) — free, no fetch of any kind needed.
+        if (mailbox is null && _cachedUid == uid && _cachedMessage is { } cached)
         {
-            if (_current is null)
+            var cachedPart = cached.Attachments.OfType<MimePart>().ElementAtOrDefault(index);
+            if (cachedPart?.Content is not { } cachedContent)
                 return null;
-
-            var originalFolder = _current;
-            var switchingFolder = mailbox is not null
-                && !string.Equals(mailbox, originalFolder.FullName, StringComparison.Ordinal);
-            if (switchingFolder)
-            {
-                if (!_foldersByMailbox.TryGetValue(mailbox!, out var target))
-                    return null;
-                try { await target.OpenAsync(FolderAccess.ReadOnly); }
-                catch (Exception) { return null; }
-                _current = target;
-            }
-
             try
             {
-                message = await _current.GetMessageAsync(uid);
+                await using var stream = File.Create(targetPath);
+                await cachedContent.DecodeToAsync(stream);
+                return targetPath;
             }
             catch (Exception)
             {
                 return null;
             }
-            finally
-            {
-                if (switchingFolder)
-                {
-                    try { await originalFolder.OpenAsync(FolderAccess.ReadWrite); }
-                    catch (Exception) { /* EnsureConnectedAsync's own reconnect path recovers next call */ }
-                    _current = originalFolder;
-                }
-            }
         }
-
-        var part = message.Attachments.OfType<MimePart>().ElementAtOrDefault(index);
-        if (part?.Content is not { } content)
-            return null;
 
         try
         {
-            await using var stream = File.Create(targetPath);
-            await content.DecodeToAsync(stream);
-            return targetPath;
+            return await WithReconnectRetryAsync(async () =>
+            {
+                // Previously missing entirely — this whole live-fetch path went straight from the
+                // lock to using _current/_imap with no connectivity check at all, so a connection
+                // that had dropped just sat there returning null (logged as a generic failure) on
+                // every attempt until something else happened to reconnect it. A live report of a
+                // PDF simply not opening traced back to exactly this.
+                await EnsureConnectedAsync();
+                if (_current is null)
+                    return null;
+
+                var originalFolder = _current;
+                var switchingFolder = mailbox is not null
+                    && !string.Equals(mailbox, originalFolder.FullName, StringComparison.Ordinal);
+                if (switchingFolder)
+                {
+                    if (!_foldersByMailbox.TryGetValue(mailbox!, out var target))
+                        return null;
+                    await target.OpenAsync(FolderAccess.ReadOnly);
+                    _current = target;
+                }
+
+                try
+                {
+                    // Not the currently cached message — this used to fall back to GetMessageAsync(uid),
+                    // fetching the ENTIRE RFC822 message (every other attachment, every embedded image,
+                    // the full body) over IMAP just to extract one small part. A live report traced a PDF
+                    // stuck on "Downloading…" for the better part of a minute to exactly this. BODYSTRUCTURE
+                    // alone — no content, just the MIME tree shape — is enough to locate the target
+                    // attachment's own section; GetStreamAsync then pulls only that one section over the
+                    // wire, already decoded per its own Content-Transfer-Encoding.
+                    var summaries = await _current.FetchAsync([uid], MessageSummaryItems.BodyStructure);
+                    var attachmentParts = new List<BodyPartBasic>();
+                    CollectAttachmentParts(summaries.FirstOrDefault()?.Body, attachmentParts);
+                    var targetPart = attachmentParts.ElementAtOrDefault(index);
+                    if (targetPart is null)
+                    {
+                        // CollectAttachmentParts' own walk over BODYSTRUCTURE didn't find as many attachment
+                        // parts as the index it was asked for expects — that index was assigned once, when
+                        // the message was first opened, from MimeMessage.Attachments' own enumeration over
+                        // the FULL message. A live report of some (not all) attachments failing to open
+                        // outright is consistent with the two orderings disagreeing for some real message
+                        // structure this hasn't been tested against; logged so that can actually be confirmed
+                        // instead of just failing silently every time.
+                        Log.Warn($"DownloadAttachmentAsync: BODYSTRUCTURE walk found {attachmentParts.Count} attachment part(s) for uid {uid}, but index {index} was requested");
+                        return null;
+                    }
+
+                    // Octets (the part's own declared size, from BODYSTRUCTURE — no extra fetch needed) is
+                    // what turns MailKit's raw byte-count callback into an actual percentage; without a
+                    // known total there's nothing to divide by, so progress is simply skipped rather than
+                    // guessed at.
+                    var transferProgress = progress is null || targetPart.Octets <= 0
+                        ? null
+                        : new BytesToPercentProgress(progress, targetPart.Octets);
+                    await using var partStream = await _current.GetStreamAsync(uid, targetPart, CancellationToken.None, transferProgress);
+                    await using var fileStream = File.Create(targetPath);
+                    // GetStreamAsync hands back the section's raw wire bytes — still whatever
+                    // Content-Transfer-Encoding the part declared (base64, for the overwhelming
+                    // majority of real attachments), NOT decoded to the actual file content despite
+                    // this method's own earlier remarks claiming otherwise. A live report of a PDF
+                    // that "downloaded" fine (right size, opens the viewer) but wouldn't render
+                    // traced back to exactly this: the saved file was literally the base64 text of
+                    // the PDF, never decoded to bytes. MimeKit's own DecoderFilter, run over a
+                    // FilteredStream wrapping the destination, is the standard way to decode a raw
+                    // section stream without needing the whole message parsed into a MimePart first.
+                    var encoding = ParseContentTransferEncoding(targetPart.ContentTransferEncoding);
+                    if (encoding is ContentEncoding.Default or ContentEncoding.SevenBit or ContentEncoding.EightBit or ContentEncoding.Binary)
+                    {
+                        // Nothing to decode — already the real bytes as-is.
+                        await partStream.CopyToAsync(fileStream);
+                    }
+                    else
+                    {
+                        using var filtered = new MimeKit.IO.FilteredStream(fileStream);
+                        filtered.Add(MimeKit.IO.Filters.DecoderFilter.Create(encoding));
+                        await partStream.CopyToAsync(filtered);
+                        filtered.Flush();
+                    }
+                    return targetPath;
+                }
+                finally
+                {
+                    if (switchingFolder)
+                    {
+                        try { await originalFolder.OpenAsync(FolderAccess.ReadWrite); }
+                        catch (Exception) { /* EnsureConnectedAsync's own reconnect path recovers next call */ }
+                        _current = originalFolder;
+                    }
+                }
+            });
         }
-        catch (Exception)
+        catch (Exception ex)
         {
+            Log.Warn($"DownloadAttachmentAsync failed for uid {uid}, index {index}", ex);
             return null;
+        }
+    }
+
+    /// <summary>BODYSTRUCTURE reports the transfer encoding as a bare IMAP string ("BASE64",
+    /// "QUOTED-PRINTABLE", "7BIT", ...), not the typed <see cref="ContentEncoding"/> enum a MimePart
+    /// would already carry — this is the same finite set MimeKit's own MimePart.ContentTransferEncoding
+    /// setter recognizes, just parsed by hand since there's no BodyPartBasic-facing equivalent.</summary>
+    private static ContentEncoding ParseContentTransferEncoding(string? name) => name?.Trim().ToLowerInvariant() switch
+    {
+        "base64" => ContentEncoding.Base64,
+        "quoted-printable" => ContentEncoding.QuotedPrintable,
+        "7bit" => ContentEncoding.SevenBit,
+        "8bit" => ContentEncoding.EightBit,
+        "binary" => ContentEncoding.Binary,
+        "x-uuencode" or "uuencode" => ContentEncoding.UUEncode,
+        _ => ContentEncoding.Default,
+    };
+
+    /// <summary>Same recursive shape as HasAttachments above, but collecting every matching part in
+    /// document order instead of just testing for any — this order must match MimeMessage.Attachments'
+    /// own enumeration exactly, since DownloadAttachmentAsync's caller identifies "which attachment"
+    /// purely by index into that list (assigned once, when the message was first opened and its full
+    /// MimeMessage was available) and this walks the lighter BODYSTRUCTURE-only tree instead.</summary>
+    private static void CollectAttachmentParts(BodyPart? part, List<BodyPartBasic> into)
+    {
+        switch (part)
+        {
+            case BodyPartMultipart multipart:
+                foreach (var child in multipart.BodyParts)
+                    CollectAttachmentParts(child, into);
+                break;
+            case BodyPartBasic basic when basic.IsAttachment:
+                into.Add(basic);
+                break;
+        }
+    }
+
+    /// <summary>Adapts MailKit's own byte-count progress callback (fired as GetStreamAsync reads
+    /// the IMAP FETCH response) into a plain 0-100 percentage against a known total — a live report
+    /// asked for real download progress instead of a static "Downloading…" with no indication of
+    /// how far along it actually is. IProgress&lt;T&gt; (not a raw callback) is what lets the UI side
+    /// use the framework's own System.Progress&lt;T&gt;, which marshals back to the caller's captured
+    /// SynchronizationContext automatically — no manual Dispatcher.Invoke needed on the UI end.</summary>
+    private sealed class BytesToPercentProgress(IProgress<int> progress, long totalBytes) : ITransferProgress
+    {
+        public void Report(long bytesTransferred) => Report(bytesTransferred, totalBytes);
+
+        public void Report(long bytesTransferred, long totalSize)
+        {
+            if (totalSize > 0)
+                progress.Report((int)Math.Clamp(bytesTransferred * 100L / totalSize, 0, 100));
         }
     }
 

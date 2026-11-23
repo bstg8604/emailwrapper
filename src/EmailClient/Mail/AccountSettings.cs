@@ -110,8 +110,7 @@ public sealed class AccountStore
     public List<AccountSettings> Accounts { get; set; } = new();
     public string? ActiveEmail { get; set; }
 
-    private static string DataDir =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IITBWebmailWrapper");
+    private static string DataDir => Settings.AppDataPaths.Root;
 
     private static string AccountPath => Path.Combine(DataDir, "account.dat");
 
@@ -124,7 +123,9 @@ public sealed class AccountStore
 
             var encrypted = File.ReadAllBytes(AccountPath);
             var json = ProtectedData.Unprotect(encrypted, null, DataProtectionScope.CurrentUser);
-            return JsonSerializer.Deserialize<AccountStore>(Encoding.UTF8.GetString(json)) ?? new AccountStore();
+            var store = JsonSerializer.Deserialize<AccountStore>(Encoding.UTF8.GetString(json)) ?? new AccountStore();
+            RepairMissingLocalParts(store);
+            return store;
         }
         catch (Exception)
         {
@@ -132,6 +133,34 @@ public sealed class AccountStore
             // "no saved accounts" rather than crashing the app on startup.
             return new AccountStore();
         }
+    }
+
+    /// <summary>
+    /// Self-heals an account saved with an empty local-part — the sign-in form pre-fills the Email
+    /// box with the literal text "@iitb.ac.in" as a hint for what to type before it, and the save
+    /// check only verified the string contained an "@" somewhere, not that there was anything
+    /// before it. An account saved without ever editing past that placeholder ends up with
+    /// Email == "@iitb.ac.in" — accepted at sign-in (IMAP/SMTP auth uses Username, not Email, so
+    /// login worked fine), but MimeKit rejects it outright the moment a real message needs a From
+    /// header built from it, which is what made Send fail every time with no indication why.
+    /// Repaired here, once, using the same Username IMAP/SMTP auth already relies on — and
+    /// persisted immediately so this only ever needs to run once per broken account.
+    /// </summary>
+    private static void RepairMissingLocalParts(AccountStore store)
+    {
+        var repaired = false;
+        foreach (var account in store.Accounts)
+        {
+            if (!account.Email.StartsWith('@') || string.IsNullOrWhiteSpace(account.Username))
+                continue;
+            var oldEmail = account.Email;
+            account.Email = account.Username + account.Email;
+            if (store.ActiveEmail?.Equals(oldEmail, StringComparison.OrdinalIgnoreCase) == true)
+                store.ActiveEmail = account.Email;
+            repaired = true;
+        }
+        if (repaired)
+            store.Persist();
     }
 
     public void Persist()

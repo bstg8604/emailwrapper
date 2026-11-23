@@ -25,7 +25,6 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<InboxRow> _messages = [];
     private readonly ICollectionView _messagesView;
     private readonly DispatcherTimer _pollTimer;
-    private readonly DispatcherTimer _scheduledSendTimer;
     private TrayIcon? _tray;
     private readonly NewMailNotifier _notifier = new();
 
@@ -35,12 +34,27 @@ public partial class MainWindow : Window
     /// </summary>
     private MessageCache? _cache;
 
-    /// <summary>Queue for "Send Later" — null until an account connects, same lifecycle as
-    /// <see cref="_cache"/>. See MainWindow.ScheduledSend.cs.</summary>
-    private ScheduledSendStore? _scheduledSends;
+    /// <summary>The local database MailSyncEngine keeps current — introduced alongside the existing
+    /// live-refresh path for now (see MailSyncEngine.Start() below): it's populated from the real
+    /// account, but nothing reads from it yet. UI call sites are being migrated onto it
+    /// incrementally, each verified independently before the next. Null until an account connects,
+    /// same lifecycle as <see cref="_cache"/>.</summary>
+    private MailStore? _mailStore;
+    private MailSyncEngine? _syncEngine;
+    // The raw IMAP mailbox name IDLE is currently watching (kept in step with every
+    // _mail.StartIdleMonitor call) — OnMailboxActivity needs this to tell MailSyncEngine which
+    // folder to sync immediately; _currentFolder is the app's own display key ("Inbox"/"Sent"/...),
+    // not necessarily the same string the server expects.
+    private string _idleWatchedMailbox = "INBOX";
+
     private OfflineActionQueue? _offlineActions;
     private bool _isExiting;
     private string _currentFolder = "Inbox";
+    // Bumped on every GoToFolderAsync call — lets a folder load whose result would otherwise land
+    // after a *later* folder switch already repointed the shared IMAP connection's selected mailbox
+    // detect that and discard its own (now-wrong-folder) result instead of applying or caching it
+    // under the wrong folder name. See GoToFolderAsync's own remarks for the exact race this closes.
+    private int _folderRequestSeq;
     private string _searchText = "";
     private string _quickFilter = "All";
     private string _sortKey = "Date";
@@ -99,13 +113,6 @@ public partial class MainWindow : Window
         // catches new mail / other-client changes within a minute, which is enough for a first cut.
         _pollTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(60) };
         _pollTimer.Tick += async (_, _) => await RefreshMessagesAsync(announceNewMail: true);
-
-        // 30s is frequent enough that a message scheduled for, say, an exact minute doesn't visibly
-        // slip — the app has to actually be running at the scheduled time regardless (there's no
-        // server-side scheduling on plain IMAP/SMTP), so this is a best-effort local clock, not a
-        // guarantee the way a real mail server's own scheduled-send feature would be.
-        _scheduledSendTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
-        _scheduledSendTimer.Tick += async (_, _) => await SendDueScheduledMessagesAsync();
 
         // Long enough that normal typing never fires a search per keystroke, short enough that
         // pausing after a word feels responsive rather than "did anything happen".
@@ -207,6 +214,27 @@ public partial class MainWindow : Window
         }
         if (_settings.Maximized)
             WindowState = WindowState.Maximized;
+
+        // Clamped to the column's own MinWidth/MaxWidth (280-700, set in XAML) rather than trusted
+        // outright — a hand-edited settings.json shouldn't be able to produce a column the row
+        // template can't actually lay out in.
+        MessageListColumn.Width = new GridLength(Math.Clamp(_settings.MessageListColumnWidth, 280, 700));
+    }
+
+    private void MessageListSplitter_DragCompleted(object sender, System.Windows.Controls.Primitives.DragCompletedEventArgs e)
+    {
+        _settings.MessageListColumnWidth = MessageListColumn.Width.Value;
+        _settings.Save();
+    }
+
+    /// <summary>Called from the Settings window's own "Reset panel sizes" button — the message list
+    /// column is the only user-resizable panel today, but this is named generically so a future
+    /// second one (the sidebar, say) has an obvious place to add its own reset alongside this.</summary>
+    public void ResetPanelSizes()
+    {
+        MessageListColumn.Width = new GridLength(360);
+        _settings.MessageListColumnWidth = 360;
+        _settings.Save();
     }
 
     /// <summary>
@@ -296,36 +324,137 @@ public partial class MainWindow : Window
         StatusText.Text = $"Showing {rows.Count} saved messages — connecting…";
     }
 
+    /// <summary>Which account (if any) the background loop below is currently retrying for — also
+    /// doubles as the "is a retry loop already running" guard, so a second failure while one is
+    /// already in flight doesn't spawn a duplicate. Cleared the moment a connect actually succeeds,
+    /// the account changes, or the failure turns out to be real bad credentials (see
+    /// MailErrors.IsBadCredentials) rather than "just no network right now".</summary>
+    private string? _autoReconnectEmail;
+
     private async Task TryConnectAsync(AccountSettings account)
     {
         StatusText.Text = $"Signing in as {account.Email}…";
+
+        // Created up front — not inside SwitchToLiveAsync, as before — specifically so its existing
+        // contacts can be checked *before* connecting: that's what lets ConnectAsync skip its own
+        // ~800-envelope scan when a usable copy from a previous session is already there, which was
+        // most of what still made sign-in feel slow even after the rest of the local-database
+        // rewiring made everything else fast.
+        //
+        // Both this construction and the ListAllContacts call below live INSIDE the try block, not
+        // ahead of it — MailStore's constructor opens two SQLite connections, sets WAL mode, and
+        // runs a schema migration, any of which can throw (a mail.db/-wal/-shm left locked by a
+        // crashed prior instance, a disk/permission issue). A live incident was exactly this
+        // exception escaping uncaught here: the async void Loaded handler let it fall through to
+        // the global unhandled-exception dialog, _mail/_mailStore were never assigned, and the app
+        // was left permanently stuck on the cached inbox with no retry — the literal "mails not
+        // loading" symptom. Folding it into this same try/catch means a failure here now takes the
+        // exact same offline-and-keep-retrying path a failed IMAP connect already did.
+        MailStore? mailStore = null;
         var backend = new ImapMailBackend(account);
         try
         {
-            await backend.ConnectAsync();
+            mailStore = new MailStore(account.Email);
+            var skipContactsScan = mailStore.ListAllContacts().Count > 0;
+            await backend.ConnectAsync(skipContactsScan);
         }
         catch (Exception ex)
         {
+            mailStore?.Dispose();
             await backend.DisposeAsync();
-            Log.Error($"Sign-in failed for {account.Email}", ex);
+
+            // A live report was exactly this: the internet dropped for a moment, the very next
+            // connect attempt (app startup, or a retry) failed with a plain network error, and the
+            // resulting "Sign-in failed — click Sign in to retry" message read as having been
+            // logged out, even though nothing about the saved account ever changed. Only a genuine
+            // bad-credentials rejection actually needs the user's attention here; anything else
+            // (no network, DNS, a TLS hiccup, a timeout) means the account is still fine and just
+            // isn't reachable yet, so this keeps quietly retrying in the background instead.
+            if (MailErrors.IsBadCredentials(ex))
+            {
+                _autoReconnectEmail = null;
+                Log.Error($"Sign-in failed for {account.Email}", ex);
+                SetConnectionState(ConnectionState.Offline);
+                StatusText.Text = $"Sign-in failed ({MailErrors.Friendly(ex)}). Click Sign in to retry.";
+                return;
+            }
+
+            Log.Warn($"Couldn't reach the mail server for {account.Email} — will keep retrying automatically", ex);
             SetConnectionState(ConnectionState.Offline);
             StatusText.Text = _messages.Count > 0
-                ? $"Offline — showing saved mail. ({MailErrors.Friendly(ex)})"
-                : $"Sign-in failed ({MailErrors.Friendly(ex)}). Click Sign in to retry.";
+                ? $"Offline — showing saved mail. Reconnecting automatically… ({MailErrors.Friendly(ex)})"
+                : $"Offline — reconnecting automatically… ({MailErrors.Friendly(ex)})";
+
+            if (_autoReconnectEmail != account.Email)
+            {
+                _autoReconnectEmail = account.Email;
+                _ = AutoReconnectLoopAsync(account);
+            }
             return;
         }
 
-        await SwitchToLiveAsync(account, backend);
+        _autoReconnectEmail = null;
+        await SwitchToLiveAsync(account, backend, mailStore!);
     }
 
-    private async Task SwitchToLiveAsync(AccountSettings account, ImapMailBackend backend)
+    /// <summary>Keeps trying to connect, once every 30 seconds, until it succeeds, the failure
+    /// turns out to be real bad credentials, this account stops being the one worth retrying for
+    /// (a different account signed in, or this one was signed out), or the app is exiting — same
+    /// "never give up silently, but don't spam either" reasoning as the IMAP IDLE loop's own retry
+    /// logic elsewhere in this class.</summary>
+    private async Task AutoReconnectLoopAsync(AccountSettings account)
+    {
+        while (!_isExiting && _autoReconnectEmail == account.Email && _mail is null)
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(30));
+            }
+            catch (Exception)
+            {
+                return;
+            }
+            if (_isExiting || _autoReconnectEmail != account.Email || _mail is not null)
+                return;
+            await TryConnectAsync(account);
+        }
+    }
+
+    private async Task SwitchToLiveAsync(AccountSettings account, ImapMailBackend backend, MailStore? mailStore = null)
     {
         if (_mail is not null)
             await _mail.DisposeAsync();
 
         _account = account;
         _cache = new MessageCache(account.Email);
-        _scheduledSends = new ScheduledSendStore(account.Email);
+        _syncEngine?.Dispose();
+        // TryConnectAsync already opens the store itself (it needs to check existing contacts before
+        // connecting) and hands it here rather than let it be reopened — reopening would just be
+        // wasted work against the same file. The account-switch path (below) has no store yet, so it
+        // still passes null and gets one created fresh here.
+        if (!ReferenceEquals(_mailStore, mailStore))
+            _mailStore?.Dispose();
+        _mailStore = mailStore ?? new MailStore(account.Email);
+        _syncEngine = new MailSyncEngine(backend, _mailStore);
+        // Background-thread events (same "marshal to the UI thread yourself" contract as
+        // ImapMailBackend.MailboxActivity/ConnectionStateChanged) — re-render whatever the sync
+        // engine just refreshed in the local database, reactively, instead of the UI having to poll
+        // or ask for it itself.
+        _syncEngine.FoldersChanged += () => Dispatcher.BeginInvoke(async () => await RefreshFoldersAsync());
+        // Only worth re-rendering if the folder that just synced is the one actually on screen —
+        // a background sync of some other folder has nothing to show right now regardless.
+        // RefreshMessagesAsync itself now reads from MailStore first (see its own remarks), so this
+        // is an instant local re-render, not another network round trip.
+        _syncEngine.DataChanged += mailbox => Dispatcher.BeginInvoke(async () =>
+        {
+            if (_mail is not null && string.Equals(SpecialMailbox(_currentFolder), mailbox, StringComparison.OrdinalIgnoreCase))
+                await RefreshMessagesAsync();
+        });
+        _syncEngine.SyncStatusChanged += status => Dispatcher.BeginInvoke(() =>
+        {
+            BackgroundSyncStatusText.Text = status ?? "";
+            BackgroundSyncStatusText.Visibility = string.IsNullOrEmpty(status) ? Visibility.Collapsed : Visibility.Visible;
+        });
         _offlineActions = new OfflineActionQueue(account.Email);
         _mail = backend;
         _mail.MailboxActivity += OnMailboxActivity;
@@ -348,21 +477,40 @@ public partial class MainWindow : Window
 
         StatusText.Text = "Connected";
         UpdateAccountButtonVisual();
+        // ImapMailBackend.ConnectAsync (already finished by the time this method runs) just spent a
+        // real IMAP scan building `backend.Contacts` — persisting its result here means every
+        // *future* app start, contact autocomplete is instant from MailStore, not another 800-envelope
+        // rescan. The rescan itself isn't removed by this (a bigger, separate change — see
+        // ContactsIndex.BuildAsync's own lack of lock protection, not safe to call from anywhere
+        // else without addressing that first); this only stops its result from being thrown away
+        // every time the app restarts.
+        foreach (var contact in backend.Contacts.ListAll())
+            _mailStore.SeedContact(contact.Address, contact.HasName ? contact.DisplayName : null, contact.Score);
         await LoadSpecialMailboxesAsync();
         await RefreshFoldersAsync();
         await RefreshMessagesAsync();
         _mail.StartIdleMonitor("INBOX");
+        _idleWatchedMailbox = "INBOX";
+        // Runs alongside the live-refresh calls just above for now, not in place of them — see
+        // _mailStore's own remarks on the incremental cutover.
+        _syncEngine.Start();
         // IDLE delivers new mail almost immediately; the poll timer stays on purely as a safety
         // net for whatever it doesn't cover (a dropped IDLE connection, flag changes made from
         // another client that don't always trip CountChanged) — no reason to poll every 60s for
         // the common case IDLE already handles.
-        _pollTimer.Start();
-        _scheduledSendTimer.Start();
-        UpdateScheduledBadge();
-        // A scheduled send whose time already passed while the app was closed/offline goes out on
-        // this very first tick, rather than waiting up to 30s — the same "catch up immediately"
-        // behavior a real server-side scheduler would have.
-        _ = SendDueScheduledMessagesAsync();
+        //
+        // Started 30s late, not immediately alongside _syncEngine — both this and MailSyncEngine's
+        // own sweep run on exactly a 60-second DispatcherTimer, and starting them back-to-back put
+        // them in near-perfect phase with each other for the rest of the session: a live report's
+        // log showed the two colliding on the shared IMAP connection lock repeatedly, not just once
+        // at launch — dozens of times over a session, each one forcing whichever side lost to wait
+        // the full 60-second lock timeout and then fail outright, which is exactly the kind of stall
+        // that made an unrelated attachment download queued behind the same lock at that moment feel
+        // stuck or fail too. Offsetting the phase by half the interval keeps them landing roughly
+        // 30 seconds apart from each other indefinitely (neither timer drifts relative to the
+        // other), rather than trying to make either side's own lock wait smarter.
+        _ = Task.Delay(TimeSpan.FromSeconds(30))
+            .ContinueWith(_ => _pollTimer.Start(), TaskScheduler.FromCurrentSynchronizationContext());
     }
 
     /// <summary>Fired from the IMAP IDLE background loop's own thread — never touch UI state
@@ -375,6 +523,10 @@ public partial class MainWindow : Window
         // which the log alone couldn't distinguish. Remove once that's actually diagnosed.
         Log.Info("IDLE: mailbox activity detected, queuing an announcing refresh");
         Dispatcher.BeginInvoke(async () => await RefreshMessagesAsync(announceNewMail: true));
+        // Fire-and-forget, and deliberately not marshaled to the UI thread — TriggerImmediateSync
+        // never touches a WPF control itself, only _mail/_mailStore; its own DataChanged event is
+        // what a UI subscriber would need to marshal, not this call.
+        _syncEngine?.TriggerImmediateSync(_idleWatchedMailbox);
     }
 
     /// <summary>Also raised from a background thread — same rule.</summary>
@@ -481,7 +633,8 @@ public partial class MainWindow : Window
     {
         var account = new AccountWindow(existing, _settings, _mail,
             onFoldersChanged: () => { _ = RefreshFoldersAsync(); },
-            onSwitchAccount: a => { _ = TryConnectAsync(a); })
+            onSwitchAccount: a => { _ = TryConnectAsync(a); },
+            onPanelSizesReset: ResetPanelSizes)
         {
             Owner = this,
         };
@@ -533,15 +686,30 @@ public partial class MainWindow : Window
         addItem.Click += (_, _) => OpenAccountWindow(existing: null);
         menu.Items.Add(addItem);
 
-        var settingsItem = new System.Windows.Controls.MenuItem { Header = "Account settings…" };
+        var settingsItem = new System.Windows.Controls.MenuItem { Header = "Settings…" };
         settingsItem.Click += (_, _) => OpenAccountWindow(existing: _account);
         menu.Items.Add(settingsItem);
+
+        menu.Items.Add(new System.Windows.Controls.Separator());
 
         var signOutItem = new System.Windows.Controls.MenuItem
         {
             Header = _account is null ? "Sign out" : $"Sign out of {_account.Email}",
         };
-        signOutItem.Click += async (_, _) => await SignOutActiveAsync();
+        // A misclick here previously signed out immediately with no way back short of re-entering
+        // the password and server settings from scratch — confirm first, the same way Delete
+        // Folder and Remove Account already do, and put a separator above it so it isn't the very
+        // next item under Settings.
+        signOutItem.Click += async (_, _) =>
+        {
+            var label = _account is null ? "your account" : _account.Email;
+            var choice = EmailClient.UI.ConfirmDialog.Show(this, "Sign out",
+                $"Sign out of {label}? You'll need to sign in again to see this mailbox.",
+                warningIcon: true, new EmailClient.UI.ConfirmChoice("Cancel"), new EmailClient.UI.ConfirmChoice("Sign out", Destructive: true));
+            if (choice != "Sign out")
+                return;
+            await SignOutActiveAsync();
+        };
         menu.Items.Add(signOutItem);
 
         menu.Opened += (_, _) => menu.PopIn();
@@ -561,7 +729,7 @@ public partial class MainWindow : Window
                 string.IsNullOrWhiteSpace(c.Name) ? c.Email : $"{c.Name} <{c.Email}>"))
             .ToList();
 
-        var learned = _mail?.Contacts.Suggest(query, max) ?? [];
+        var learned = _mailStore?.SuggestContacts(query, max) ?? _mail?.Contacts.Suggest(query, max) ?? [];
         return manual.Concat(learned.Where(l => !manual.Any(m => m.Address.Equals(l.Address, StringComparison.OrdinalIgnoreCase))))
             .Take(max)
             .ToList();
@@ -572,8 +740,17 @@ public partial class MainWindow : Window
     /// matching what "sign out" always did when there was only ever one account to lose.</summary>
     private async Task SignOutActiveAsync()
     {
+        // A real, user-requested sign-out always wins over a background auto-reconnect loop that
+        // might still be waiting on this exact account from an earlier network failure.
+        _autoReconnectEmail = null;
         _pollTimer.Stop();
-        _scheduledSendTimer.Stop();
+        _syncEngine?.Dispose();
+        _syncEngine = null;
+        // Disposed (releasing its file handle on mail.db) before _cache?.Clear() below deletes the
+        // whole per-account cache directory that file lives in — Windows won't delete a file that's
+        // still open.
+        _mailStore?.Dispose();
+        _mailStore = null;
         if (_mail is not null)
         {
             _mail.MailboxActivity -= OnMailboxActivity;
@@ -640,6 +817,8 @@ public partial class MainWindow : Window
     /// </summary>
     public void RestoreFromTray()
     {
+        ReturnToInboxFirstPage();
+
         if (_tray is not null)
         {
             _tray.Restore();
@@ -651,6 +830,22 @@ public partial class MainWindow : Window
         if (WindowState == WindowState.Minimized)
             WindowState = WindowState.Normal;
         Activate();
+        this.FadeInOnRestore();
+    }
+
+    /// <summary>
+    /// Coming back from the tray (or a second launch while already running) should feel like
+    /// opening the app fresh — Inbox, page one — rather than resuming whatever folder/page was left
+    /// on screen when it was hidden. The window and its backend state stay alive while in the tray,
+    /// so without this the app silently "remembers" the last spot, which reads as a bug rather than
+    /// the intended behavior.
+    /// </summary>
+    private void ReturnToInboxFirstPage()
+    {
+        if (_currentFolder == "Inbox" && _page.Page <= 1)
+            return;
+
+        _ = GoToFolderAsync("Inbox");
     }
 
     /// <summary>
@@ -684,6 +879,8 @@ public partial class MainWindow : Window
         if (_isExiting)
         {
             _tray?.Dispose();
+            _syncEngine?.Dispose();
+            _mailStore?.Dispose();
             if (_mail is not null)
                 await _mail.DisposeAsync();
             return;
@@ -692,6 +889,8 @@ public partial class MainWindow : Window
         if (!_settings.CloseToTray || _tray is null)
         {
             _tray?.Dispose();
+            _syncEngine?.Dispose();
+            _mailStore?.Dispose();
             if (_mail is not null)
                 await _mail.DisposeAsync();
             System.Windows.Application.Current.Shutdown();

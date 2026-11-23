@@ -80,7 +80,50 @@ public partial class MainWindow
         MessageList.ItemsSource = _messages;
     }
 
-    private async Task RefreshMessagesAsync(bool announceNewMail = false)
+    /// <param name="folderRequestId">Set only by GoToFolderAsync, alongside <paramref name="expectedFolder"/>
+    /// — every other caller (the poll timer, IDLE push, post-send/delete/archive refreshes) omits
+    /// both and gets the old unconditional-apply behavior, since those aren't racing a folder
+    /// switch. When set, the fetched page is discarded — never applied to the list, never cached —
+    /// if a *later* folder switch has since repointed the shared IMAP connection's selected mailbox:
+    /// ListMessagesAsync reads whatever folder is selected *at fetch time*, which by the time this
+    /// call's own await returns may no longer be the one this call actually asked for. Applying (or
+    /// worse, caching to disk) a page fetched from the wrong folder under this call's own folder name
+    /// is exactly the bug this closes — see GoToFolderAsync's own remarks.</param>
+    /// <summary>Answers a page from MailStore alone, or returns null if it can't — extracted out of
+    /// RefreshMessagesAsync's own non-announce branch (see the comments there) so GoToFolderAsync can
+    /// call the exact same local-data check to paint a folder's mail instantly, before the network
+    /// debounce and SelectFolderAsync that used to gate this from running at all. MailStore only ever
+    /// holds a folder's most recent messages (MailSyncEngine's own recency cap), so a requested page
+    /// whose starting offset falls beyond however much is actually synced has nothing local to answer
+    /// with — that's the null case, left for the caller's own live-IMAP fallback.</summary>
+    private MessagePage? TryLocalPage(string mailbox, int page)
+    {
+        var localPage = _mailStore?.GetMessages(mailbox, page) ?? MessagePage.Empty;
+        var realTotal = _mailStore?.GetFolderTotal(mailbox) ?? 0;
+        var offset = (page - 1) * MailStore.PageSize;
+        if (localPage.Total == 0 || offset >= localPage.Total)
+            return null;
+
+        // Roundcube/IITB-webmail-style reply-arrow status — see AttachReplyStatus' own remarks.
+        // Every caller of TryLocalPage (folder switch's instant paint, RefreshMessagesAsync) picks
+        // this up for free rather than needing its own separate call.
+        var rows = _mailStore is null ? localPage.Rows : _mailStore.AttachReplyStatus(localPage.Rows, mailbox, SpecialMailbox("Sent"));
+        localPage = localPage with { Rows = rows };
+
+        // Local data can answer this page, but its own Total/PageCount only reflect how much is
+        // synced — substituting the folder's real total (once known) is what makes the pager show
+        // "page 4 of 47", not silently cap at "4 of 4".
+        return realTotal > localPage.Total
+            ? localPage with
+              {
+                  PageCount = Math.Max(1, (int)Math.Ceiling(realTotal / (double)MailStore.PageSize)),
+                  Total = realTotal,
+              }
+            : localPage;
+    }
+
+    private async Task RefreshMessagesAsync(
+        bool announceNewMail = false, int? folderRequestId = null, string? expectedFolder = null, bool forceLive = false)
     {
         if (_refreshInFlight)
         {
@@ -100,10 +143,62 @@ public partial class MainWindow
         }
 
         _refreshInFlight = true;
-        SyncProgressBar.Visibility = Visibility.Visible;
         try
         {
-            var page = await _mail.ListMessagesAsync();
+            MessagePage page;
+            if (announceNewMail)
+            {
+                // New-mail detection needs a genuinely fresh server round trip — reading from
+                // MailStore here would race MailSyncEngine's own same-moment background write with
+                // no ordering guarantee between them, and a missed "new mail" notification is a far
+                // worse failure than this one path (the poll tick / IDLE activity) staying at IMAP
+                // speed. Every other caller below doesn't need that freshness guarantee.
+                page = await _mail.ListMessagesAsync();
+            }
+            else
+            {
+                var mailbox = SpecialMailbox(expectedFolder ?? _currentFolder);
+                // ImapMailBackend's own page cursor, not this class's _page.Page — ChangePageAsync
+                // already advances it (via NextPageAsync/PreviousPageAsync) *before* calling this
+                // method, so it's the single authoritative "which page is actually being asked
+                // for" value. _page here still holds the *previous* call's result until the
+                // assignment further down — reading _page.Page instead of this used to silently
+                // re-request whatever page was last shown, so Next/Previous never actually
+                // advanced what MailStore was asked for.
+                var requestedPage = _mail.CurrentPage;
+                // forceLive skips the cache entirely — used by the explicit Refresh button, where
+                // "there's already something cached for this page" is exactly the wrong reason to
+                // skip asking the server: the whole point of clicking Refresh is to check for
+                // something new, and a folder that already has any cached page (Sent, say, right
+                // after sending) would otherwise never take this branch at all, no matter how many
+                // times Refresh is clicked — a real, live "why isn't my just-sent mail showing up"
+                // bug, not just a cosmetic staleness gap.
+                if (!forceLive && TryLocalPage(mailbox, requestedPage) is { } localAnswer)
+                {
+                    page = localAnswer;
+                }
+                else
+                {
+                    // Real IMAP pagination — same as this always used before MailStore existed, and
+                    // it already computes the correct true page count itself (from the live
+                    // folder's own Count, not anything synced). Caching the result here is what
+                    // makes browsing back through older mail organically grow local coverage over
+                    // time, rather than the sync window being a hard, permanent ceiling.
+                    page = await _mail.ListMessagesAsync();
+                    if (page.Rows.Count > 0)
+                        _mailStore?.UpsertMessages(mailbox, page.Rows);
+                }
+            }
+
+            // A later folder switch may have already repointed the shared IMAP connection's
+            // selected mailbox while the fetch above was in flight — ListMessagesAsync reads
+            // whatever's selected *at fetch time*, so what just came back can genuinely be a
+            // different folder's messages than the one this call actually asked for. Applying (or
+            // caching to disk, further down) a result like that under this call's own folder name
+            // is exactly the bug this guards against — see RefreshMessagesAsync's own remarks.
+            if (folderRequestId is { } fid && fid != _folderRequestSeq)
+                return;
+
             _page = page;
 
             // A poll tick or IDLE push landing while search results are on screen must not clobber
@@ -127,11 +222,12 @@ public partial class MainWindow
             // trade a lot of disk for a view the user has to navigate to anyway.
             if (page.Page == 1)
             {
-                _cache?.SaveRows(_currentFolder, page.Rows);
+                var cacheFolder = expectedFolder ?? _currentFolder;
+                _cache?.SaveRows(cacheFolder, page.Rows);
                 // Inbox only, and only the row list's own folder — not worth quietly prefetching
                 // every folder someone happens to pass through, since Inbox is overwhelmingly where
                 // "can I read this offline" actually comes up.
-                if (_currentFolder == "Inbox")
+                if (cacheFolder == "Inbox")
                     _ = PrefetchBodiesAsync(page.Rows);
             }
         }
@@ -147,7 +243,6 @@ public partial class MainWindow
         finally
         {
             _refreshInFlight = false;
-            SyncProgressBar.Visibility = Visibility.Collapsed;
         }
     }
 
@@ -164,11 +259,13 @@ public partial class MainWindow
     /// </summary>
     private async Task PrefetchBodiesAsync(IReadOnlyList<InboxRow> rows)
     {
-        if (_mail is null || _cache is null || _prefetchInFlight)
+        if (_mail is null || _mailStore is null || _prefetchInFlight)
             return;
 
+        // Only ever called for Inbox (see the caller) — mailbox is fixed for the whole batch.
+        var mailbox = SpecialMailbox("Inbox");
         const int maxPrefetch = 15;
-        var toFetch = rows.Where(r => _cache.LoadDetail(r.Id) is null).Take(maxPrefetch).ToList();
+        var toFetch = rows.Where(r => _mailStore.GetBody(mailbox, r.Id) is null).Take(maxPrefetch).ToList();
         if (toFetch.Count == 0)
             return;
 
@@ -181,7 +278,7 @@ public partial class MainWindow
                 {
                     var detail = await _mail.OpenMessageAsync(row.Id);
                     if (detail is not null)
-                        _cache.SaveDetail(row.Id, detail);
+                        _mailStore.SaveBody(mailbox, row.Id, detail);
                 }
                 catch (Exception)
                 {
@@ -250,10 +347,29 @@ public partial class MainWindow
         _tray?.Notify(title, text, fresh[0].Id);
     }
 
-    /// <summary>Brings the app back and opens the message a clicked notification was about.</summary>
-    private void OpenNotifiedMessage(string id)
+    /// <summary>
+    /// Brings the app back and opens the message a clicked notification was about. A new-mail
+    /// notification only ever announces something in Inbox, but the window can be sitting on any
+    /// folder/page when it's clicked (the tray-restore-resets-to-Inbox behavior only applies to a
+    /// plain tray restore, not this specific "go to this exact message" gesture) — previously this
+    /// just looked the id up in whatever `_messages` already happened to hold, which silently found
+    /// nothing unless Inbox page 1 was already on screen, and the message only actually appeared
+    /// once the next scheduled poll/IDLE sweep happened to refresh it — reading as "nothing happened
+    /// for several seconds" instead of jumping straight there.
+    /// </summary>
+    private async void OpenNotifiedMessage(string id)
     {
+        if (_currentFolder != "Inbox")
+            await GoToFolderAsync("Inbox");
+
         var row = _messages.FirstOrDefault(r => r.Id == id);
+        if (row is null)
+        {
+            // Not on screen yet (still on a stale page, or the sync sweep hasn't caught up) — force
+            // an immediate refresh rather than waiting on whatever's next scheduled.
+            await RefreshMessagesAsync();
+            row = _messages.FirstOrDefault(r => r.Id == id);
+        }
         if (row is not null)
             MessageList.SelectedItem = row;
     }
@@ -287,7 +403,18 @@ public partial class MainWindow
         _foldersRefreshInFlight = true;
         try
         {
-            var folders = await _mail.ListFoldersAsync();
+            // MailStore first — instant, no network wait. Only falls through to the live IMAP call
+            // (same as this always did) the very first time for an account, before MailSyncEngine's
+            // own first sweep has had a chance to populate anything; the live result primes the
+            // store so every subsequent call this session is the fast path.
+            var folders = _mailStore?.GetFolders() ?? [];
+            if (folders.Count == 0)
+            {
+                var live = await _mail.ListFoldersAsync();
+                folders = live;
+                foreach (var f in live)
+                    _mailStore?.UpsertFolder(f);
+            }
             _liveFolders.Clear();
             _liveFolders.AddRange(folders);
             RenderLiveFolders();
@@ -323,6 +450,8 @@ public partial class MainWindow
         public bool IsActive { get; init; }
     }
 
+    private List<FolderView> _lastRenderedFolderViews = [];
+
     private void RenderLiveFolders()
     {
         // The folders that already have their own fixed row at the top of the sidebar.
@@ -340,6 +469,15 @@ public partial class MainWindow
                 IsActive = string.Equals(f.Mailbox, _currentFolder, StringComparison.Ordinal),
             })
             .ToList();
+
+        // This runs on every folder switch *and* every 60-second poll tick, not just when a
+        // folder's unread count or the folder set actually changed — resetting ItemsSource (and
+        // the visibility/FadeIn bookkeeping below) for identical data is a pointless re-layout on a
+        // timer, not something any user action caused. FolderView is a record, so SequenceEqual is
+        // real structural equality here, not reference comparison.
+        if (views.SequenceEqual(_lastRenderedFolderViews))
+            return;
+        _lastRenderedFolderViews = views;
 
         LiveFolderList.ItemsSource = views;
 
@@ -402,6 +540,13 @@ public partial class MainWindow
             ResetReadingPane();
             ClearSelection();
             await RefreshMessagesAsync();
+            // A live report: scrolled partway down page 1, then paging forward landed on page 2
+            // already scrolled to roughly the same spot — WPF's virtualizing ListBox doesn't reset
+            // its own scroll offset just because ItemsSource's contents changed underneath it, only
+            // if the SelectedItem/keyboard focus moves there. Every page should start at its own
+            // top, the same way clicking into a folder already does.
+            if (_messages.Count > 0)
+                MessageList.ScrollIntoView(_messages[0]);
         }
         catch (SessionExpiredException)
         {
@@ -417,7 +562,7 @@ public partial class MainWindow
             StatusText.Text = "Sign in to view your mailbox";
             return;
         }
-        await RefreshMessagesAsync();
+        await RefreshMessagesAsync(forceLive: true);
     }
 
     private void ComposeButton_Click(object sender, RoutedEventArgs e) => OpenCompose(bodyHtml: NewMessageBodyHtml);
@@ -436,7 +581,7 @@ public partial class MainWindow
         compose.SuggestContacts = query => SuggestAllContacts(query);
         // Exact lookup (not the substring search SuggestContacts does) for the recipient chips'
         // own "is this actually someone I've mailed before" coloring and click-for-details popover.
-        compose.FindContact = address => _mail?.Contacts.FindContact(address);
+        compose.FindContact = address => _mailStore?.FindContact(address) ?? _mail?.Contacts.FindContact(address);
         // Live lookup (not a snapshot at open time) so editing signatures while a compose window
         // is already open still offers the current set, not whatever existed a minute ago.
         compose.GetSignatures = () =>
@@ -447,12 +592,22 @@ public partial class MainWindow
         // previous one instead of littering Drafts with a new message every 30 seconds; both
         // closures below share it directly since they're declared in this same method scope.
         MailKit.UniqueId? autosavedUid = null;
+        // Serializes the two closures below against each other (and against overlapping ticks of
+        // the same one) — without this, a slow save still in flight when the next periodic tick (or
+        // an explicit "Save Draft" click) fires meant both calls read the same stale autosavedUid,
+        // both appended a *new* draft copy, and only whichever finished last ever updated
+        // autosavedUid — the other's copy was silently orphaned in Drafts forever, never tracked
+        // again by anything that could clean it up. A real lock (not just a bool flag) is needed
+        // specifically so the save that was waiting runs *after* the first one updates autosavedUid,
+        // and therefore replaces that copy instead of creating yet another one alongside it.
+        var draftSaveLock = new SemaphoreSlim(1, 1);
         if (!UseMockData)
         {
             compose.AutoSaveDraft = async draft =>
             {
                 if (_mail is null || !draft.HasContent)
                     return;
+                await draftSaveLock.WaitAsync();
                 try
                 {
                     var (saved, newUid) = await _mail.SaveDraftAsync(draft, autosavedUid);
@@ -462,6 +617,10 @@ public partial class MainWindow
                 catch (Exception)
                 {
                     // Best-effort — the explicit save-on-close path still covers the normal case.
+                }
+                finally
+                {
+                    draftSaveLock.Release();
                 }
             };
         }
@@ -486,6 +645,7 @@ public partial class MainWindow
 
             if (_mail is null)
                 return false;
+            await draftSaveLock.WaitAsync();
             try
             {
                 var (saved, newUid) = await _mail.SaveDraftAsync(draft, autosavedUid);
@@ -496,6 +656,10 @@ public partial class MainWindow
             catch (Exception)
             {
                 return false;
+            }
+            finally
+            {
+                draftSaveLock.Release();
             }
         };
 
@@ -510,16 +674,7 @@ public partial class MainWindow
 
         if (compose.Result is { } result)
         {
-            if (compose.ScheduledForUtc is { } sendAt && _scheduledSends is not null)
-            {
-                _scheduledSends.Add(result, sendAt);
-                UpdateScheduledBadge();
-                StatusText.Text = $"Scheduled to send {sendAt.ToLocalTime():ddd, MMM d 'at' h:mm tt}";
-            }
-            else
-            {
-                BeginUndoableSend(result);
-            }
+            BeginUndoableSend(result);
             // The message is being sent for real now (or queued to, which makes the autosaved copy
             // just as stale) — any autosaved copy in Drafts is no longer needed either way.
             if (autosavedUid is { } sentUid && _mail is not null)
@@ -635,7 +790,8 @@ public partial class MainWindow
         UpdateListEmptyState();
 
         _searchDebounceTimer.Stop();
-        if (string.IsNullOrWhiteSpace(SearchBox.Text))
+        var query = SearchBox.Text.Trim();
+        if (string.IsNullOrEmpty(query))
         {
             // Cleared — drop back to the normal folder view immediately rather than waiting out
             // the debounce for something that isn't actually a search anymore.
@@ -646,6 +802,13 @@ public partial class MainWindow
             }
             return;
         }
+
+        // Local results paint on every keystroke, not gated behind the debounce below — a
+        // MailStore.Search call is a small indexed local read (a few ms), nothing here needs
+        // protecting from running too often. Only the live IMAP fallback (RunFolderSearchAsync,
+        // still reached via the debounce/Enter key) needs that protection.
+        ShowLocalSearchResults(query, SpecialMailbox(_currentFolder), FolderDisplayName(_currentFolder));
+
         _searchDebounceTimer.Start();
     }
 
@@ -731,6 +894,31 @@ public partial class MainWindow
 
     private void SearchBox_LostFocus(object sender, RoutedEventArgs e) => SearchHintPopup.IsOpen = false;
 
+    /// <summary>Paints whatever MailStore's own instant index already knows about this query — a
+    /// small indexed local read, no network wait — so it can run directly from every keystroke
+    /// (see SearchBox_TextChanged) instead of being stuck behind the same debounce that exists only
+    /// to protect the live IMAP fallback in RunFolderSearchAsync from firing on every keystroke.
+    /// Returns whether anything local matched (RunFolderSearchAsync uses this to decide whether to
+    /// show its own "Searching…" status instead).</summary>
+    private bool ShowLocalSearchResults(string query, string mailbox, string folderLabel)
+    {
+        var localResults = _mailStore?.Search(query, mailbox) ?? [];
+        // The box may have changed since this was kicked off — never paint a stale query's results
+        // over whatever the user has since typed.
+        if (localResults.Count == 0 || query != SearchBox.Text.Trim())
+            return false;
+
+        if (_mailStore is not null)
+            localResults = _mailStore.AttachReplyStatus(localResults, mailbox, SpecialMailbox("Sent"));
+
+        _serverSearchActive = true;
+        ReplaceMessages(SortRows(localResults));
+        PagerBar.Visibility = Visibility.Collapsed;
+        UpdateListEmptyState();
+        StatusText.Text = $"{localResults.Count} match{(localResults.Count == 1 ? "" : "es")} for \"{query}\" in {folderLabel} — checking message content…";
+        return true;
+    }
+
     private async Task RunFolderSearchAsync()
     {
         var query = SearchBox.Text.Trim();
@@ -744,7 +932,14 @@ public partial class MainWindow
         }
 
         var folderLabel = FolderDisplayName(_currentFolder);
-        StatusText.Text = $"Searching {folderLabel}…";
+        var mailbox = SpecialMailbox(_currentFolder);
+
+        // A match that's purely in the message body (not indexed locally — see MailStore's own
+        // remarks on why) or in a message not yet synced locally won't show up from the instant
+        // local pass — that's exactly what the server round trip below is still for.
+        if (!ShowLocalSearchResults(query, mailbox, folderLabel))
+            StatusText.Text = $"Searching {folderLabel}…";
+
         try
         {
             var results = await _mail.SearchAsync(query);
@@ -756,6 +951,9 @@ public partial class MainWindow
                 return;
             _serverSearchActive = true;
 
+            // The server's own full-folder search is authoritative for completeness (it also
+            // catches body-text matches and anything not yet synced locally) — its results replace
+            // whatever the instant local pass above showed, which was only ever a head start.
             ReplaceMessages(SortRows(results));
 
             PagerBar.Visibility = Visibility.Collapsed;
@@ -806,6 +1004,7 @@ public partial class MainWindow
                 "Couldn't change the star"))
             return;
 
+        _mailStore?.UpdateFlags(SpecialMailbox(_currentFolder), row.Id, starred: starred);
         UpdateRow(row.Id, r => r with { Starred = starred });
 
         // The Starred folder is a derived view — unstarring while looking at it must remove the

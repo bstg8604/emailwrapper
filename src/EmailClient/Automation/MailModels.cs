@@ -26,7 +26,16 @@ public sealed record InboxRow(
     // select first. IMAP UIDs are only unique within one folder, not across the whole mailbox, so
     // treating a cross-folder row's id as if it belonged to the active folder risks operating on
     // an entirely unrelated message that happens to share the same UID number.
-    [property: JsonPropertyName("mailbox")] string? Mailbox = null)
+    [property: JsonPropertyName("mailbox")] string? Mailbox = null,
+    // Roundcube/IITB webmail's own reply-arrow convention — an Inbox row shows it once you've
+    // sent a reply (a Sent-folder message whose References names this one), a Sent row shows it
+    // once someone's replied back (a non-Sent message whose References names this one). Answered
+    // from MailStore's local message_references table (see MailStore.GetReplyStatus), so it's only
+    // ever known for a locally-synced row — a live-IMAP-fallback row (a page beyond the synced
+    // window) simply doesn't set this, same "may not know yet" gap the app already accepts
+    // elsewhere rather than paying a live round trip just to answer it.
+    [property: JsonPropertyName("replied")] bool Replied = false,
+    [property: JsonPropertyName("hasReply")] bool HasReply = false)
 {
     public string Initial
     {
@@ -191,11 +200,17 @@ public sealed record CalendarInvite(
     [property: JsonPropertyName("joinUrl")] string? JoinUrl);
 
 /// <summary>One real IMAP folder/mailbox as the sidebar renders it.</summary>
+/// <param name="Total">The folder's real, full message count (IMAP STATUS MESSAGES) — distinct
+/// from however many of those MailSyncEngine has actually synced into MailStore, which is capped
+/// (see MailSyncEngine.RecentMessagesPerFolder) and can be far smaller for an old/large mailbox.
+/// Needed so the message-list pager can show — and page through — the folder's true size instead
+/// of silently capping at whatever's synced so far. 0 means not yet known.</param>
 public sealed record MailFolder(
     [property: JsonPropertyName("mailbox")] string Mailbox,
     [property: JsonPropertyName("name")] string Name,
     [property: JsonPropertyName("unread")] int Unread,
-    [property: JsonPropertyName("depth")] int Depth = 0);
+    [property: JsonPropertyName("depth")] int Depth = 0,
+    [property: JsonPropertyName("total")] int Total = 0);
 
 /// <summary>One page of a folder's message list.</summary>
 public sealed record MessagePage(

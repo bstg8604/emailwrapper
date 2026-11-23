@@ -31,9 +31,7 @@ public sealed class MessageCache
     private readonly string _root;
 
     public MessageCache(string accountEmail)
-        : this(accountEmail, Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "IITBWebmailWrapper", "cache"))
+        : this(accountEmail, Path.Combine(Settings.AppDataPaths.Root, "cache"))
     {
     }
 

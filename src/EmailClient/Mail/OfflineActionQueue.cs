@@ -23,9 +23,8 @@ public sealed record PendingAction(
 
 /// <summary>
 /// On-disk queue for mutating actions (delete/archive/mark read/mark unread/move) taken while
-/// offline, per account — same reasoning and shape as <see cref="ScheduledSendStore"/>. Replayed in
-/// order on reconnect (see MainWindow.OfflineActions.cs) so a message deleted then archived offline
-/// doesn't race and land in the wrong place.
+/// offline, per account. Replayed in order on reconnect (see MainWindow.OfflineActions.cs) so a
+/// message deleted then archived offline doesn't race and land in the wrong place.
 /// </summary>
 public sealed class OfflineActionQueue
 {
@@ -33,9 +32,7 @@ public sealed class OfflineActionQueue
     private readonly string _path;
 
     public OfflineActionQueue(string accountEmail)
-        : this(accountEmail, Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "IITBWebmailWrapper", "offline-actions"))
+        : this(accountEmail, Path.Combine(Settings.AppDataPaths.Root, "offline-actions"))
     {
     }
 

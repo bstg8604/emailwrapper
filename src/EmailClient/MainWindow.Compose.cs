@@ -149,7 +149,10 @@ public partial class MainWindow
             StatusText.Text = "Sending…";
             var warnings = await _mail.SendAsync(result);
             StatusText.Text = "Message sent";
-            await RefreshMessagesAsync();
+            // forceLive — see RefreshMessagesAsync's own remarks on why the plain cache-first path
+            // would otherwise never reflect what was just sent if the currently-viewed folder
+            // already had anything cached (Sent, most relevantly, right after sending).
+            await RefreshMessagesAsync(forceLive: true);
 
             // The send itself succeeded, but something in it didn't (a vanished attachment, a
             // mistyped address) — worth an explicit acknowledgment rather than a status-bar line
@@ -164,20 +167,6 @@ public partial class MainWindow
         catch (Exception ex)
         {
             Log.Error("Sending a message failed", ex);
-
-            // Offline (or a transient network blip), not a real problem with the message itself —
-            // queued for the same background sender Send Later already uses (due "now" rather than
-            // some future time), so it goes out automatically the moment the connection's back
-            // instead of the user having to notice they're online again and manually retry. A real
-            // rejection (bad address, auth failure) falls through to the reopen-compose path below
-            // instead, since silently retrying that forever would never succeed on its own.
-            if (_mail is not null && _scheduledSends is not null && IsConnectivityException(ex))
-            {
-                _scheduledSends.Add(result, DateTime.UtcNow);
-                UpdateScheduledBadge();
-                StatusText.Text = "You're offline — this will send automatically once you're back online";
-                return;
-            }
 
             // The compose window is already gone by this point (Undo Send closes it immediately),
             // so a failure here used to just lose whatever the user typed. Reopening it with
@@ -384,11 +373,22 @@ public partial class MainWindow
         return chain;
     }
 
+    /// <summary>True when the opened message was written by the signed-in account itself — a
+    /// message read from Sent, or a self-CC'd copy elsewhere. Reply/Reply-All both need to know
+    /// this: plain <c>detail.From</c> is just the user's own address for a message like this, which
+    /// is exactly what a live report on a real account found — Reply on your own Sent mail produced
+    /// a compose window addressed right back to yourself, with the real recipient dropped entirely.</summary>
+    private bool IsSelfSent(MessageDetail detail) =>
+        string.Equals(MailText.AddressOnly(detail.From), SelfAddress, StringComparison.OrdinalIgnoreCase);
+
     private void ReplyButton_Click(object sender, RoutedEventArgs e)
     {
         if (_openDetail is not { } detail)
             return;
-        OpenCompose(detail.From, ReplySubject(detail.Subject), BuildReplyBody(detail),
+        // Self-sent: reply to whoever you actually sent it to — the first recipient, matching a
+        // normal reply's "one addressee" shape rather than Reply-All's "everyone" below.
+        var to = IsSelfSent(detail) ? MailText.FirstRecipient(detail.To) : detail.From;
+        OpenCompose(to, ReplySubject(detail.Subject), BuildReplyBody(detail),
             bodyHtml: WithSignature(BuildReplyBodyHtml(detail)),
             inReplyTo: detail.MessageId, references: ReplyReferences(detail));
     }
@@ -397,6 +397,18 @@ public partial class MainWindow
     {
         if (_openDetail is not { } detail)
             return;
+
+        if (IsSelfSent(detail))
+        {
+            // No "original sender" to promote to To here — that's you. The original recipients
+            // take that place instead; the original Cc (minus you) fills out Cc, same exclusion
+            // reasoning as the normal case below.
+            var selfSentCc = MailText.MergeRecipients([SelfAddress], detail.Cc);
+            OpenCompose(detail.To, ReplySubject(detail.Subject), BuildReplyBody(detail), selfSentCc,
+                bodyHtml: WithSignature(BuildReplyBodyHtml(detail)),
+                inReplyTo: detail.MessageId, references: ReplyReferences(detail));
+            return;
+        }
 
         var cc = MailText.MergeRecipients(
             [SelfAddress, MailText.AddressOnly(detail.From)], detail.To, detail.Cc);
@@ -560,21 +572,17 @@ public partial class MainWindow
         if (verb == "Deleted" && _currentFolder == "Trash" && !ConfirmDelete(1))
             return;
 
-        if (!UseMockData && !await RunLiveAsync(
-                () => liveAction(row.Id), verb, $"Couldn't {verb.ToLowerInvariant().TrimEnd('d')} the message",
-                () => _offlineActions?.Add(verb == "Deleted" ? OfflineActionKind.Delete : OfflineActionKind.Archive, row.Id,
-                    messageIdHeader: (_openRow?.Id == row.Id ? _openDetail?.MessageId : null) ?? _cache?.LoadDetail(row.Id)?.MessageId)))
-            return;
-
-        // Set by ArchiveAsync/DeleteAsync when the server told us the message's new UID in its
-        // destination — only then is there anything to actually move back on Undo.
-        var undo = UseMockData ? null : _mail!.ConsumeLastMove();
-
+        // Optimistic: reflect the action in the UI immediately rather than waiting on the live IMAP
+        // round trip first — a live report was exactly this lag reading as "archive/move isn't
+        // working immediately". The live call still runs right after; on genuine failure (not the
+        // offline-queued case, which already counts as success below) the row is put back.
+        var originFolder = _currentFolder;
+        var wasOpen = _openRow is not null && _openRow.Id == row.Id;
+        var openMessageId = wasOpen ? _openDetail?.MessageId : null;
         RemoveMessageEverywhere(row.Id);
         UpdateListEmptyState();
         UpdateInboxBadge();
-
-        if (_openRow is not null && _openRow.Id == row.Id)
+        if (wasOpen)
             ResetReadingPane();
 
         if (UseMockData)
@@ -582,6 +590,31 @@ public partial class MainWindow
             StatusText.Text = $"{verb} (sample data)";
             return;
         }
+
+        if (!await RunLiveAsync(
+                () => liveAction(row.Id), verb, $"Couldn't {verb.ToLowerInvariant().TrimEnd('d')} the message",
+                () => _offlineActions?.Add(verb == "Deleted" ? OfflineActionKind.Delete : OfflineActionKind.Archive, row.Id,
+                    messageIdHeader: openMessageId ?? _cache?.LoadDetail(row.Id)?.MessageId)))
+        {
+            // The live call genuinely failed — put the row back where the optimistic update took it
+            // from, rather than silently losing it from the list.
+            if (_folderData.TryGetValue(originFolder, out var rows))
+                rows.Insert(0, row);
+            if (originFolder == _currentFolder)
+                ApplyCurrentFolderView();
+            UpdateListEmptyState();
+            UpdateInboxBadge();
+            return;
+        }
+
+        // Set by ArchiveAsync/DeleteAsync when the server told us the message's new UID in its
+        // destination — only then is there anything to actually move back on Undo.
+        var undo = _mail!.ConsumeLastMove();
+
+        // Written straight through — a deleted/archived message must not keep showing up in a
+        // local-database-backed folder view until MailSyncEngine's next sweep happens to notice
+        // it's gone.
+        _mailStore?.DeleteMessage(SpecialMailbox(originFolder), row.Id);
 
         if (undo is { } move)
         {

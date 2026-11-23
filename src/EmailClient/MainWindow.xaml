@@ -56,6 +56,10 @@
         <!-- Round icon-only button (refresh/star/reply/etc.) now lives in Theme.xaml, shared
              app-wide instead of redeclared per window. -->
 
+        <!-- Same fade-overlay shape as the shared IconButton style (Theme.xaml) — a separate overlay
+             Border whose Opacity animates in/out, instead of the previous instant Background swap
+             that made hovering these three feel like a different, less-polished control than every
+             other icon button in the app. -->
         <Style x:Key="WindowGlyphButton" TargetType="Button" BasedOn="{StaticResource IconButton}">
             <Setter Property="Width" Value="40"/>
             <Setter Property="Height" Value="40"/>
@@ -64,12 +68,29 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
-                        <Border x:Name="Bd" Background="{TemplateBinding Background}">
+                        <Grid>
+                            <Border x:Name="Bd" Background="{TemplateBinding Background}"/>
+                            <Border x:Name="HoverOverlay" Background="{DynamicResource SurfaceHover}" Opacity="0" IsHitTestVisible="False"/>
                             <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                        </Border>
+                        </Grid>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource SurfaceHover}"/>
+                                <Trigger.EnterActions>
+                                    <BeginStoryboard>
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="HoverOverlay" Storyboard.TargetProperty="Opacity"
+                                                              To="1" Duration="0:0:0.12"/>
+                                        </Storyboard>
+                                    </BeginStoryboard>
+                                </Trigger.EnterActions>
+                                <Trigger.ExitActions>
+                                    <BeginStoryboard>
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="HoverOverlay" Storyboard.TargetProperty="Opacity"
+                                                              To="0" Duration="0:0:0.12"/>
+                                        </Storyboard>
+                                    </BeginStoryboard>
+                                </Trigger.ExitActions>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -84,13 +105,30 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
-                        <Border x:Name="Bd" Background="{TemplateBinding Background}">
-                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                        </Border>
+                        <Grid>
+                            <Border x:Name="Bd" Background="{TemplateBinding Background}"/>
+                            <Border x:Name="HoverOverlay" Background="{DynamicResource Danger}" Opacity="0" IsHitTestVisible="False"/>
+                            <ContentPresenter x:Name="Cp" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Grid>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Danger}"/>
-                                <Setter TargetName="Bd" Property="TextElement.Foreground" Value="{DynamicResource TextOnAccent}"/>
+                                <Setter TargetName="Cp" Property="TextElement.Foreground" Value="{DynamicResource TextOnAccent}"/>
+                                <Trigger.EnterActions>
+                                    <BeginStoryboard>
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="HoverOverlay" Storyboard.TargetProperty="Opacity"
+                                                              To="1" Duration="0:0:0.12"/>
+                                        </Storyboard>
+                                    </BeginStoryboard>
+                                </Trigger.EnterActions>
+                                <Trigger.ExitActions>
+                                    <BeginStoryboard>
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="HoverOverlay" Storyboard.TargetProperty="Opacity"
+                                                              To="0" Duration="0:0:0.12"/>
+                                        </Storyboard>
+                                    </BeginStoryboard>
+                                </Trigger.ExitActions>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -268,6 +306,15 @@
                      instead, and pushes any leftover space back next to the search box instead. -->
                 <StackPanel Grid.Column="4" Orientation="Horizontal" HorizontalAlignment="Right"
                             VerticalAlignment="Center" Margin="16,0,12,0">
+                    <!-- The background sync engine's own status (folder/message sync, the throttled
+                         body-text backfill) — inline on the existing toolbar line rather than a
+                         separate row underneath it, which reserved its own line of vertical space
+                         even though the information is minor/passive. Collapsed (zero width) rather
+                         than just empty text whenever MailSyncEngine reports it's gone idle. -->
+                    <TextBlock x:Name="BackgroundSyncStatusText" VerticalAlignment="Center"
+                               Foreground="{DynamicResource TextMuted}" FontSize="11" TextTrimming="CharacterEllipsis"
+                               MaxWidth="220" Margin="0,0,10,0" Visibility="Collapsed"
+                               ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}"/>
                     <!-- Connection indicator. IMAP push can be abandoned mid-session and the
                          connection can drop; both used to be completely invisible, so mail would
                          quietly stop being announced with nothing on screen saying why. -->
@@ -298,21 +345,17 @@
             </Grid>
         </Border>
 
-        <!-- A live fetch (refresh, folder switch, search) used to give zero feedback beyond the
-             small refresh-glyph button itself — on a slow IMAP round trip that reads as the app
-             doing nothing, not working. Pinned to the toolbar's own bottom edge rather than taking
-             up its own row, so it doesn't reflow anything else when it appears/disappears. -->
-        <ProgressBar Grid.Row="1" x:Name="SyncProgressBar" VerticalAlignment="Bottom" Height="2"
-                     BorderThickness="0" Background="Transparent" Foreground="{DynamicResource ThemeAccent}"
-                     IsIndeterminate="True" Visibility="Collapsed"
-                     AutomationProperties.Name="Syncing"/>
-
         <Grid Grid.Row="2">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="190"/>
                 <ColumnDefinition Width="1"/>
-                <ColumnDefinition Width="360"/>
-                <ColumnDefinition Width="1"/>
+                <!-- Was a fixed 360, no way to make it wider — a live report showed just how
+                     cramped that leaves a real subject line (barely a few words before the
+                     ellipsis kicks in). MinWidth/MaxWidth keep a dragged-to-either-extreme result
+                     sane (never so narrow the row layout breaks, never so wide it swallows the
+                     reading pane). -->
+                <ColumnDefinition x:Name="MessageListColumn" Width="360" MinWidth="280" MaxWidth="700"/>
+                <ColumnDefinition Width="6"/>
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
 
@@ -358,23 +401,6 @@
                             <TextBlock Grid.Column="1" Text="Drafts" Margin="10,0,0,0" Foreground="{DynamicResource TextSecondary}" FontSize="13" VerticalAlignment="Center"/>
                             <Border Grid.Column="2" x:Name="DraftsBadge" Background="{DynamicResource TextDisabled}" CornerRadius="8" Padding="6,1" VerticalAlignment="Center" Visibility="Collapsed">
                                 <TextBlock x:Name="DraftsCount" Foreground="{DynamicResource SurfaceCard}" FontSize="10.5" FontWeight="SemiBold"/>
-                            </Border>
-                        </Grid>
-                    </Border>
-                    <!-- Not a real IMAP folder — a local queue of "Send Later" messages this app
-                         itself hasn't sent yet (see ScheduledSendStore). Placed right under Drafts,
-                         matching Gmail's own sidebar order for the same two "not sent yet" states. -->
-                    <Border x:Name="FolderScheduled" Style="{StaticResource FolderRow}" MouseLeftButtonUp="FolderScheduled_Click">
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="Auto"/>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Text="&#xE823;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Foreground="{DynamicResource TextSecondary}" FontSize="14" VerticalAlignment="Center"/>
-                            <TextBlock Grid.Column="1" Text="Scheduled" Margin="10,0,0,0" Foreground="{DynamicResource TextSecondary}" FontSize="13" VerticalAlignment="Center"/>
-                            <Border Grid.Column="2" x:Name="ScheduledBadge" Background="{DynamicResource TextDisabled}" CornerRadius="8" Padding="6,1" VerticalAlignment="Center" Visibility="Collapsed">
-                                <TextBlock x:Name="ScheduledCount" Foreground="{DynamicResource SurfaceCard}" FontSize="10.5" FontWeight="SemiBold"/>
                             </Border>
                         </Grid>
                     </Border>
@@ -587,24 +613,56 @@
                                             <ColumnDefinition Width="*"/>
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
-                                        <StackPanel Orientation="Horizontal" Grid.Column="0">
-                                            <Ellipse Width="7" Height="7" Fill="{DynamicResource ThemeAccent}" Margin="0,0,6,0"
+                                        <!-- A Grid, not a horizontal StackPanel — same reasoning as
+                                             the Subject line below (see its own remarks): a
+                                             StackPanel gives Sender's TextBlock infinite width to
+                                             measure against, so a long sender name had nothing to
+                                             trim against and could push the VIP/External badges out
+                                             or overflow with no ellipsis at all. Sender's own column
+                                             is "*" (it's the one variable-length item here); the
+                                             dot/VIP/External badge columns stay Auto-sized. -->
+                                        <Grid Grid.Column="0">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <Ellipse Grid.Column="0" Width="7" Height="7" Fill="{DynamicResource ThemeAccent}" Margin="0,0,6,0"
                                                      Visibility="{Binding Unread, Converter={StaticResource BoolToVis}}"/>
-                                            <TextBlock Text="{Binding Sender}" FontSize="12" Foreground="{DynamicResource TextSecondary}"
+                                            <TextBlock Grid.Column="1" Text="{Binding Sender}" FontSize="12" Foreground="{DynamicResource TextSecondary}"
+                                                       TextTrimming="CharacterEllipsis"
                                                        FontWeight="{Binding Unread, Converter={StaticResource UnreadWeight}}"/>
                                             <!-- Apple Mail's VIP concept — a sender flagged for priority, independent of
                                                  Starred (which flags one message, not everything from someone). -->
-                                            <TextBlock Text="&#xE735;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="10"
+                                            <TextBlock Grid.Column="2" Text="&#xE735;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="10"
                                                        Foreground="{DynamicResource Warning}" Margin="5,0,0,0" VerticalAlignment="Center"
-                                                       ToolTip="VIP sender"
+                                                       ToolTip="Important sender"
                                                        Visibility="{Binding IsVip, Converter={StaticResource BoolToVis}}"/>
-                                            <Border Background="{DynamicResource WarningSoft}" CornerRadius="3" Padding="4,0" Margin="6,0,0,0"
+                                            <Border Grid.Column="3" Background="{DynamicResource WarningSoft}" CornerRadius="3" Padding="4,0" Margin="6,0,0,0"
                                                     VerticalAlignment="Center" ToolTip="This sender is outside your organisation"
                                                     Visibility="{Binding IsExternalSender, Converter={StaticResource BoolToVis}}">
                                                 <TextBlock Text="External" FontSize="9" FontWeight="SemiBold" Foreground="{DynamicResource WarningDeep}"/>
                                             </Border>
-                                        </StackPanel>
+                                        </Grid>
                                         <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                            <!-- Roundcube/IITB-webmail's own reply-arrow convention: an Inbox
+                                                 row shows this once you've sent a reply, a Sent row shows it
+                                                 once you've gotten one back — mutually exclusive per row (see
+                                                 MailStore.AttachReplyStatus), so both bindings never show at
+                                                 once, just from different flags depending on which folder
+                                                 this row actually lives in. Only known for a locally-synced
+                                                 row; a row reached only via the live-IMAP-fallback page
+                                                 beyond the synced window simply shows neither, same as any
+                                                 other locally-answered-only signal in this app. -->
+                                            <TextBlock Text="&#x21A9;" FontSize="13" FontWeight="Bold" Margin="0,0,6,0"
+                                                       Foreground="{DynamicResource ThemeAccentDeep}" VerticalAlignment="Center"
+                                                       ToolTip="You replied to this"
+                                                       Visibility="{Binding Replied, Converter={StaticResource BoolToVis}}"/>
+                                            <TextBlock Text="&#x21A9;" FontSize="13" FontWeight="Bold" Margin="0,0,6,0"
+                                                       Foreground="{DynamicResource ThemeAccentDeep}" VerticalAlignment="Center"
+                                                       ToolTip="This got a reply"
+                                                       Visibility="{Binding HasReply, Converter={StaticResource BoolToVis}}"/>
                                             <Border Background="{DynamicResource ThemeAccentSoft}" CornerRadius="9" Width="18" Height="18"
                                                     Margin="0,0,6,0" VerticalAlignment="Center" ToolTip="Has attachment"
                                                     Visibility="{Binding HasAttachment, Converter={StaticResource BoolToVis}}">
@@ -614,8 +672,21 @@
                                             <TextBlock Text="{Binding Date}" Foreground="{DynamicResource TextMuted}" FontSize="11"/>
                                         </StackPanel>
                                     </Grid>
-                                    <StackPanel Orientation="Horizontal" Margin="0,3,0,0">
-                                        <TextBlock Text="{Binding Subject}" FontSize="13" Foreground="{DynamicResource TextPrimary}"
+                                    <!-- A Grid, not a horizontal StackPanel — a StackPanel measures
+                                         its children with infinite available width, so Subject's
+                                         own TextTrimming had nothing to trim against and either
+                                         overflowed or got silently clipped by whatever ancestor
+                                         happened to clip it, with no "…" ever shown (a live report:
+                                         "what happened to the … Apple Mail shows"). The Grid's own
+                                         "*" column gives Subject an actual, calculated width —
+                                         whatever's left after ThreadCount's own natural size — which
+                                         is what TextTrimming needs to ever actually trigger. -->
+                                    <Grid Margin="0,3,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="{Binding Subject}" FontSize="13" Foreground="{DynamicResource TextPrimary}"
                                                    TextTrimming="CharacterEllipsis"
                                                    FontWeight="{Binding Unread, Converter={StaticResource UnreadWeight}}"/>
                                         <!-- Apple Mail's own small thread-count numeral — informational
@@ -625,10 +696,10 @@
                                              Gmail's collapsed thread rows, this never removes a row
                                              from the list on that signal — see ConversationKey's own
                                              comment and InboxRow.ThreadCounts. -->
-                                        <TextBlock Text="{Binding ThreadCount, StringFormat=({0})}" FontSize="11.5"
+                                        <TextBlock Grid.Column="1" Text="{Binding ThreadCount, StringFormat=({0})}" FontSize="11.5"
                                                    Foreground="{DynamicResource TextMuted}" Margin="6,0,0,0" VerticalAlignment="Center"
                                                    Visibility="{Binding HasThread, Converter={StaticResource BoolToVis}}"/>
-                                    </StackPanel>
+                                    </Grid>
                                     <TextBlock Text="{Binding Snippet}" FontSize="11" Foreground="{DynamicResource TextMuted}"
                                                Margin="0,2,0,0" TextTrimming="CharacterEllipsis"/>
                                 </StackPanel>
@@ -641,7 +712,7 @@
                                         <TextBlock.Style>
                                             <Style TargetType="TextBlock">
                                                 <Setter Property="Text" Value="&#xE734;"/>
-                                                <Setter Property="Foreground" Value="{DynamicResource BorderStrong}"/>
+                                                <Setter Property="Foreground" Value="{DynamicResource TextBody}"/>
                                                 <Style.Triggers>
                                                     <DataTrigger Binding="{Binding Starred}" Value="True">
                                                         <Setter Property="Text" Value="&#xE735;"/>
@@ -680,7 +751,21 @@
                 </Border>
             </Grid>
 
-            <Border Grid.Column="3" Background="{DynamicResource SurfaceHover}"/>
+            <!-- Draggable — the message list's own column just left of this (index 2) is what
+                 actually resizes; ResizeBehavior="PreviousAndNext" is GridSplitter's own default
+                 for exactly this "grow me, shrink my other neighbor" shape. Kept visually a thin
+                 1px line (matching the sidebar's own static divider) via a narrow inner Border
+                 rather than making the whole 6px hit-test column itself look like a thick bar. -->
+            <GridSplitter Grid.Column="3" Width="6" HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
+                          Background="Transparent" ResizeBehavior="PreviousAndNext" Cursor="SizeWE"
+                          AutomationProperties.Name="Resize message list"
+                          DragCompleted="MessageListSplitter_DragCompleted">
+                <GridSplitter.Template>
+                    <ControlTemplate TargetType="GridSplitter">
+                        <Border Background="{DynamicResource SurfaceHover}" Width="1" HorizontalAlignment="Center"/>
+                    </ControlTemplate>
+                </GridSplitter.Template>
+            </GridSplitter>
 
             <!-- Reading pane -->
             <Grid Grid.Column="4" Background="{DynamicResource SurfaceAlt}">
@@ -712,8 +797,18 @@
                                     <ColumnDefinition Width="*"/>
                                     <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
-                                <TextBlock x:Name="ReadingSubject" Grid.Column="0" FontSize="19" FontWeight="SemiBold"
-                                           TextWrapping="Wrap" VerticalAlignment="Center"/>
+                                <!-- A TextBox, not a TextBlock — a plain TextBlock has no built-in text
+                                     selection at all, so the subject line couldn't be selected or
+                                     copied no matter how the user tried. Read-only and stripped of
+                                     every visual that would otherwise say "editable field" (border,
+                                     background, padding, the focus rectangle), so it still reads as
+                                     plain text, just now selectable/copyable like real text should be. -->
+                                <TextBox x:Name="ReadingSubject" Grid.Column="0" FontSize="19" FontWeight="SemiBold"
+                                         Foreground="{DynamicResource TextPrimary}"
+                                         TextWrapping="Wrap" VerticalAlignment="Center"
+                                         IsReadOnly="True" IsReadOnlyCaretVisible="False" IsUndoEnabled="False"
+                                         BorderThickness="0" Background="Transparent" Padding="0"
+                                         FocusVisualStyle="{x:Null}"/>
                                 <!-- Grouped rather than seven identical-weight icons in a row: reply
                                      actions, then organize actions, then Delete set apart with extra
                                      spacing — it's the one truly destructive action here and
@@ -728,7 +823,7 @@
                                          priority everywhere in the message list, not just this one
                                          message (see InboxRow.IsVip and the Starred distinction). -->
                                     <Button x:Name="VipToggleButton" Style="{StaticResource IconButton}"
-                                            AutomationProperties.Name="Toggle VIP sender" Click="VipToggleButton_Click">
+                                            AutomationProperties.Name="Toggle important sender" Click="VipToggleButton_Click">
                                         <TextBlock x:Name="VipToggleGlyph" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="14" Text="&#xE734;"/>
                                     </Button>
                                     <Button Content="&#xE7B8;" Style="{StaticResource IconButton}" ToolTip="Archive" AutomationProperties.Name="Archive" Click="ArchiveButton_Click"/>
@@ -772,13 +867,13 @@
                                  cue (not a blocker), the same convention Outlook/Gmail use for
                                  "this message is from an external sender". Internal mail shows no
                                  bar at all, so this only ever adds friction where it's warranted. -->
-                            <Border x:Name="ExternalSenderBar" Background="{DynamicResource InfoSoft}" CornerRadius="6"
+                            <Border x:Name="ExternalSenderBar" Background="{DynamicResource WarningSoft}" CornerRadius="6"
                                     Margin="24,10,24,0" Padding="10,6" Visibility="Collapsed">
                                 <StackPanel Orientation="Horizontal">
                                     <TextBlock Text="&#xE774;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
-                                               FontSize="12" Foreground="{DynamicResource Info}" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                               FontSize="12" Foreground="{DynamicResource WarningDeep}" VerticalAlignment="Center" Margin="0,0,8,0"/>
                                     <TextBlock Text="This message came from outside your organisation" FontSize="12"
-                                               Foreground="{DynamicResource Info}" VerticalAlignment="Center"/>
+                                               Foreground="{DynamicResource WarningDeep}" VerticalAlignment="Center"/>
                                 </StackPanel>
                             </Border>
 

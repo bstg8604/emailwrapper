@@ -35,6 +35,7 @@ public partial class AccountWindow : Window
     private readonly ImapMailBackend? _mail;
     private readonly Action? _onFoldersChanged;
     private readonly Action<AccountSettings>? _onSwitchAccount;
+    private readonly Action? _onPanelSizesReset;
     private readonly string? _activeEmail;
     private AccountSettings? _profileAccount;
 
@@ -50,13 +51,14 @@ public partial class AccountWindow : Window
     private string? _renamingMailbox;
 
     public AccountWindow(AccountSettings? existing, AppSettings settings, ImapMailBackend? mail,
-        Action? onFoldersChanged, Action<AccountSettings>? onSwitchAccount = null)
+        Action? onFoldersChanged, Action<AccountSettings>? onSwitchAccount = null, Action? onPanelSizesReset = null)
     {
         InitializeComponent();
         _settings = settings;
         _mail = mail;
         _onFoldersChanged = onFoldersChanged;
         _onSwitchAccount = onSwitchAccount;
+        _onPanelSizesReset = onPanelSizesReset;
         _activeEmail = existing?.Email;
 
         // Remembers whatever size it was last resized to, the same way the main window's own
@@ -259,15 +261,7 @@ public partial class AccountWindow : Window
     /// </summary>
     private void Hyperlink_RequestNavigate(object sender, System.Windows.Navigation.RequestNavigateEventArgs e)
     {
-        try
-        {
-            System.Diagnostics.Process.Start(
-                new System.Diagnostics.ProcessStartInfo(e.Uri.AbsoluteUri) { UseShellExecute = true });
-        }
-        catch (Exception ex)
-        {
-            Diagnostics.Log.Warn($"Couldn't open the link {e.Uri}", ex);
-        }
+        UI.BrowserLauncher.Open(_settings, e.Uri.AbsoluteUri);
         e.Handled = true;
     }
 
@@ -488,7 +482,13 @@ public partial class AccountWindow : Window
         var username = UsernameBox.Text.Trim();
         var password = RevealPasswordToggle.IsChecked == true ? PasswordRevealBox.Text : PasswordBox.Password;
 
-        if (string.IsNullOrWhiteSpace(email) || !email.Contains('@') || string.IsNullOrEmpty(password))
+        // Contains('@') alone isn't enough — the box starts pre-filled with "@iitb.ac.in" as a hint
+        // for what to type before it, so leaving that untouched (or deleting everything back to just
+        // the domain) used to save an address with nothing before the "@" at all. That passed this
+        // check and signed in fine (IMAP/SMTP auth uses Username, not Email), but silently broke
+        // every Send afterward — MimeKit rejects a from-address with an empty local-part outright.
+        var atIndex = email.IndexOf('@');
+        if (string.IsNullOrWhiteSpace(email) || atIndex <= 0 || atIndex == email.Length - 1 || string.IsNullOrEmpty(password))
         {
             ShowError("Enter your full email address and password.");
             return null;
@@ -686,6 +686,15 @@ public partial class AccountWindow : Window
     {
         if (Selected is not { } entry)
             return;
+
+        // One click used to delete a signature outright with no way back — worth the extra
+        // confirmation, the same way Delete Folder and Remove Account already ask.
+        var choice = EmailClient.UI.ConfirmDialog.Show(this, "Delete signature",
+            $"Delete \"{entry.Name}\"? This can't be undone.",
+            warningIcon: true, new EmailClient.UI.ConfirmChoice("Cancel"), new EmailClient.UI.ConfirmChoice("Delete", Destructive: true));
+        if (choice != "Delete")
+            return;
+
         SignatureStatusText.Text = "";
         var index = _signatures.IndexOf(entry);
         _signatures.RemoveAt(index);
@@ -852,15 +861,19 @@ public partial class AccountWindow : Window
     private void LinkButton_Click(object sender, RoutedEventArgs e)
     {
         SignatureLinkBar.Visibility = Visibility.Visible;
-        SignatureLinkBox.Text = "https://";
+        // Left empty rather than pre-filled with "https://" — see ComposeWindow's Link_Click for
+        // why (pasting a full URL without first selecting-all used to double up the scheme).
+        SignatureLinkBox.Text = "";
         SignatureLinkBox.Focus();
-        SignatureLinkBox.CaretIndex = SignatureLinkBox.Text.Length;
     }
 
     private async void InsertSignatureLink_Click(object sender, RoutedEventArgs e)
     {
         var url = SignatureLinkBox.Text.Trim();
         SignatureLinkBar.Visibility = Visibility.Collapsed;
+
+        if (url.Length > 0 && !System.Text.RegularExpressions.Regex.IsMatch(url, @"^[a-z][a-z0-9+.-]*:", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+            url = "https://" + url;
 
         // Only ever produce links the viewer can safely follow — a javascript: or data: href
         // typed in here would otherwise be handed straight to the recipient.
@@ -1160,6 +1173,10 @@ public partial class AccountWindow : Window
         if (!StartupRegistration.IsAvailable)
             StartWithWindowsHint.Text = "Only available when running the installed app, not under `dotnet run`.";
 
+        var browserChosen = !string.IsNullOrWhiteSpace(_settings.BrowserPath);
+        BrowserPathBox.Text = browserChosen ? _settings.BrowserPath : "System default browser";
+        ClearBrowserButton.Visibility = browserChosen ? Visibility.Visible : Visibility.Collapsed;
+
         var accounts = AccountStore.Load().Accounts;
         AccountsList.ItemsSource = accounts.Select(a =>
         {
@@ -1237,6 +1254,84 @@ public partial class AccountWindow : Window
     }
 
     private void OpenLogButton_Click(object sender, RoutedEventArgs e) => App.OpenLog();
+
+    /// <summary>The message list's own column width is a live MainWindow layout property, not
+    /// something this window has any direct handle on (see AppSettings.MessageListColumnWidth's
+    /// own remarks) — same callback-to-owner shape already used by onFoldersChanged/onSwitchAccount
+    /// above, rather than reaching through Owner (this window explicitly nulls that out itself
+    /// elsewhere, only for it to be reset by the caller's own object initializer — fragile to lean
+    /// on either way).</summary>
+    private void ResetPanelSizesButton_Click(object sender, RoutedEventArgs e) => _onPanelSizesReset?.Invoke();
+
+    private void ChooseBrowserButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement anchor)
+            return;
+
+        var menu = new System.Windows.Controls.ContextMenu { PlacementTarget = anchor };
+        menu.KeepInsideWindow();
+
+        var detected = UI.BrowserLauncher.DetectInstalledBrowsers();
+        foreach (var browser in detected)
+        {
+            var item = new System.Windows.Controls.MenuItem { Header = browser.Name };
+            item.Click += (_, _) => SetBrowserPath(browser.Path);
+            menu.Items.Add(item);
+        }
+        if (detected.Count > 0)
+            menu.Items.Add(new System.Windows.Controls.Separator());
+
+        var browse = new System.Windows.Controls.MenuItem { Header = "Browse for another app…" };
+        browse.Click += (_, _) => BrowseForBrowser();
+        menu.Items.Add(browse);
+
+        menu.Opened += (_, _) => menu.PopIn();
+        menu.IsOpen = true;
+    }
+
+    private void BrowseForBrowser()
+    {
+        var dialog = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "Choose a browser",
+            // Chrome/Brave/etc. are normally per-user installs, so a Desktop or Start Menu icon for
+            // one is almost always a .lnk shortcut, not the real .exe — accepting shortcuts here (and
+            // resolving to their real target below) means picking the icon someone actually recognizes
+            // just works, instead of silently showing nothing in an *.exe-only picker.
+            Filter = "Applications and shortcuts (*.exe;*.lnk)|*.exe;*.lnk",
+            InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.Desktop),
+        };
+        if (dialog.ShowDialog(this) != true)
+            return;
+
+        var path = dialog.FileName;
+        if (path.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase))
+        {
+            var target = UI.BrowserLauncher.ResolveShortcutTarget(path);
+            if (target is null)
+            {
+                UI.ConfirmDialog.Alert(this, "Couldn't use that shortcut", "That shortcut's target couldn't be resolved. Try picking the application's .exe directly instead.");
+                return;
+            }
+            path = target;
+        }
+
+        SetBrowserPath(path);
+    }
+
+    private void SetBrowserPath(string path)
+    {
+        _settings.BrowserPath = path;
+        _settings.Save();
+        RefreshSettingsUI();
+    }
+
+    private void ClearBrowserButton_Click(object sender, RoutedEventArgs e)
+    {
+        _settings.BrowserPath = null;
+        _settings.Save();
+        RefreshSettingsUI();
+    }
 
     private void NotificationsCheck_Click(object sender, RoutedEventArgs e)
     {
